@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import typing as t
+import sys
 
 import pandas as pd
 from sqlglot import exp
 
-from sqlmesh.core.dialect import to_schema
+from sqlmesh.core.dialect import to_schema, transform_values
 from sqlmesh.core.engine_adapter.base_postgres import BasePostgresEngineAdapter
 from sqlmesh.core.engine_adapter.mixins import (
     GetCurrentCatalogFromFunctionMixin,
@@ -38,6 +39,10 @@ class RedshiftEngineAdapter(
     # Redshift doesn't support comments for VIEWs WITH NO SCHEMA BINDING (which we always use)
     COMMENT_CREATION_VIEW = CommentCreationView.UNSUPPORTED
     SUPPORTS_REPLACE_TABLE = False
+
+    # The DEFAULT_BATCH_SIZE inherited from Postgres seems too small and slows down DataFrame imports
+    # Resetting it back to the default value
+    DEFAULT_BATCH_SIZE = 10000
 
     def _columns_query(self, table: exp.Table) -> exp.Select:
         sql = (
@@ -198,8 +203,13 @@ class RedshiftEngineAdapter(
         **kwargs: t.Any,
     ) -> None:
         """
-        Redshift doesn't support `CREATE OR REPLACE TABLE...` and it also doesn't support `VALUES` expression so we need to specially
-        handle DataFrame replacements.
+        Redshift doesn't support `CREATE OR REPLACE TABLE...` and it only supports `VALUES` in
+        `INSERT` expressions, so we need to specially handle DataFrame replacements.
+
+        DataFrames are loaded to Redshift using multi-row inserts as `INSERT INTO... VALUES (...), (...)`.
+        This method does not allow us to use the implementation with SourceQuery, but it is much
+        faster than using (`SELECT`... `UNION` ...) to replace the missing `VALUES` support in
+        `SELECT` expressions.
 
         If the table doesn't exist then we just create it and load it with insert statements
         If it does exist then we need to do the:
@@ -214,11 +224,11 @@ class RedshiftEngineAdapter(
                 column_descriptions,
                 **kwargs,
             )
-        source_queries, columns_to_types = self._get_source_queries_and_columns_to_types(
-            query_or_df, columns_to_types, target_table=table_name
-        )
-        columns_to_types = columns_to_types or self.columns(table_name)
+
+        columns_to_types = self._columns_to_types(query_or_df, columns_to_types)
         target_table = exp.to_table(table_name)
+        df = query_or_df[list(columns_to_types)]
+
         with self.transaction():
             temp_table = self._get_temp_table(target_table)
             old_table = self._get_temp_table(target_table)
@@ -230,10 +240,46 @@ class RedshiftEngineAdapter(
                 column_descriptions=column_descriptions,
                 **kwargs,
             )
-            self._insert_append_source_queries(temp_table, source_queries, columns_to_types)
+            self._insert_append_multi_row(temp_table, df, columns_to_types)
             self.rename_table(target_table, old_table)
             self.rename_table(temp_table, target_table)
             self.drop_table(old_table)
+
+    def _insert_append_multi_row(
+        self,
+        table_name: TableName,
+        df: pd.DataFrame,
+        columns_to_types: t.Dict[str, exp.DataType],
+        batch_size: t.Optional[int] = None,
+    ) -> None:
+        """
+        Inserts the given DataFrame into the given table using multi-row inserts
+        """
+        batch_size = self.DEFAULT_BATCH_SIZE if batch_size is None else batch_size
+        for values_exp in self._values_exp_for_batch_range(df, batch_size, columns_to_types):
+            insert_sql = exp.insert(values_exp, table_name, columns=list(columns_to_types))
+            self.execute(insert_sql)
+
+    def _values_exp_for_batch_range(
+        self,
+        df: pd.DataFrame,
+        batch_size: int,
+        columns_to_types: t.Dict[str, exp.DataType],
+    ) -> t.Iterator[t.List[exp.Select]]:
+        """
+        Returns a generator that batches the DataFrame into `VALUES` expressions
+        """
+        assert isinstance(df, pd.DataFrame)
+        num_rows = len(df.index)
+        batch_size = sys.maxsize if batch_size == 0 else batch_size
+        rows = list(df.itertuples(index=False, name=None))
+        for batch_start in range(0, num_rows, batch_size):
+            batch_end = min(num_rows, batch_start + batch_size)
+            batch = [
+                tuple(transform_values(row, columns_to_types))
+                for row in rows[batch_start:batch_end]
+            ]
+            yield exp.values(batch)
 
     def _get_data_objects(
         self, schema_name: SchemaName, object_names: t.Optional[t.Set[str]] = None
