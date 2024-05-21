@@ -219,15 +219,28 @@ MODEL (
 ### description
 - Optional description of the model. Automatically registered as a table description/comment with the underlying SQL engine (if supported by the engine).
 
-### table_properties
-- A key-value of arbitrary table properties specific to the target engine. For example:
+### physical_properties (previously table_properties)
+- A key-value mapping of arbitrary properties specific to the target engine that are applied to the model table / view in the physical layer. For example:
 
 ```sql linenums="1"
 MODEL (
   ...,
-  table_properties (
+  physical_properties (
     partition_expiration_days = 7,
     require_partition_filter = true
+  )
+);
+
+```
+
+### virtual_properties
+- A key-value mapping of arbitrary properties specific to the target engine that are applied to the model view in the virtual layer. For example:
+
+```sql linenums="1"
+MODEL (
+  ...,
+  virtual_properties (
+    labels = [('test-label', 'label-value')]
   )
 );
 

@@ -124,7 +124,7 @@ class _Model(ModelMeta, frozen=True):
         end: t.Optional[TimeLike] = None,
         execution_time: t.Optional[TimeLike] = None,
         **kwargs: t.Any,
-    ) -> t.Generator[QueryOrDF, None, None]:
+    ) -> t.Iterator[QueryOrDF]:
         """Renders the content of this model in a form of either a SELECT query, executing which the data for this model can
         be fetched, or a dataframe object which contains the data itself.
 
@@ -716,7 +716,7 @@ class _Model(ModelMeta, frozen=True):
             data.append(column_name)
             data.append(column_type.sql())
 
-        for key, value in (self.table_properties or {}).items():
+        for key, value in (self.physical_properties or {}).items():
             data.append(key)
             data.append(gen(value))
 
@@ -777,6 +777,10 @@ class _Model(ModelMeta, frozen=True):
                 )
             else:
                 raise SQLMeshError(f"Unexpected audit name '{audit_name}'.")
+
+        for key, value in (self.virtual_properties or {}).items():
+            metadata.append(key)
+            metadata.append(gen(value))
 
         metadata.extend(gen(s) for s in self.signals)
         metadata.extend(self._additional_metadata)
@@ -1142,7 +1146,7 @@ class SeedModel(_SqlBasedModel):
         end: t.Optional[TimeLike] = None,
         execution_time: t.Optional[TimeLike] = None,
         **kwargs: t.Any,
-    ) -> t.Generator[QueryOrDF, None, None]:
+    ) -> t.Iterator[QueryOrDF]:
         self._ensure_hydrated()
 
         date_columns = []
@@ -1163,12 +1167,15 @@ class SeedModel(_SqlBasedModel):
             # convert all date/time types to native pandas timestamp
             for column in [*date_columns, *datetime_columns]:
                 df[column] = pd.to_datetime(df[column])
+
             # extract datetime.date from pandas timestamp for DATE columns
             for column in date_columns:
                 df[column] = df[column].dt.date
+
             df[bool_columns] = df[bool_columns].apply(lambda i: str_to_bool(str(i)))
             df.loc[:, string_columns] = df[string_columns].mask(
-                cond=lambda x: x.notna(), other=df[string_columns].astype(str)  # type: ignore
+                cond=lambda x: x.notna(),  # type: ignore
+                other=df[string_columns].astype(str),  # type: ignore
             )
             yield df
 
@@ -1318,7 +1325,7 @@ class PythonModel(_Model):
         end: t.Optional[TimeLike] = None,
         execution_time: t.Optional[TimeLike] = None,
         **kwargs: t.Any,
-    ) -> t.Generator[QueryOrDF, None, None]:
+    ) -> t.Iterator[QueryOrDF]:
         env = prepare_env(self.python_env)
         start, end = make_inclusive(start or c.EPOCH, end or c.EPOCH)
         execution_time = to_datetime(execution_time or c.EPOCH)
@@ -1808,7 +1815,11 @@ def _create_model(
     physical_schema_override: t.Optional[t.Dict[str, str]] = None,
     **kwargs: t.Any,
 ) -> Model:
-    _validate_model_fields(klass, {"name", *kwargs} - {"grain"}, path)
+    _validate_model_fields(klass, {"name", *kwargs} - {"grain", "table_properties"}, path)
+
+    kwargs["session_properties"] = _resolve_session_properties(
+        (defaults or {}).get("session_properties"), kwargs.get("session_properties")
+    )
 
     dialect = dialect or ""
     physical_schema_override = physical_schema_override or {}
@@ -1871,6 +1882,29 @@ def _split_sql_model_statements(
 
     query, pos = query_positions[0]
     return query, expressions[:pos], expressions[pos + 1 :]
+
+
+def _resolve_session_properties(
+    default: t.Optional[t.Dict[str, t.Any]],
+    provided: t.Optional[exp.Expression | t.Dict[str, t.Any]],
+) -> t.Optional[exp.Expression]:
+    if isinstance(provided, dict):
+        session_properties = {k: exp.Literal.string(k).eq(v) for k, v in provided.items()}
+    elif provided:
+        if isinstance(provided, exp.Paren):
+            provided = exp.Tuple(expressions=[provided.this])
+        session_properties = {expr.this.name: expr for expr in provided}
+    else:
+        session_properties = {}
+
+    for k, v in (default or {}).items():
+        if k not in session_properties:
+            session_properties[k] = exp.Literal.string(k).eq(v)
+
+    if session_properties:
+        return exp.Tuple(expressions=list(session_properties.values()))
+
+    return None
 
 
 def _validate_model_fields(klass: t.Type[_Model], provided_fields: t.Set[str], path: Path) -> None:
@@ -1940,11 +1974,11 @@ def _python_env(
         if macro_ref.package is None and macro_ref.name in macros:
             used_macros[macro_ref.name] = macros[macro_ref.name]
 
-    for name, macro in used_macros.items():
-        if isinstance(macro, Executable):
-            serialized_env[name] = macro
-        elif not hasattr(macro, c.SQLMESH_BUILTIN):
-            build_env(macro.func, env=python_env, name=name, path=module_path)
+    for name, used_macro in used_macros.items():
+        if isinstance(used_macro, Executable):
+            serialized_env[name] = used_macro
+        elif not hasattr(used_macro, c.SQLMESH_BUILTIN):
+            build_env(used_macro.func, env=python_env, name=name, path=module_path)
 
     serialized_env.update(serialize_env(python_env, path=module_path))
 
@@ -1984,9 +2018,9 @@ def _parse_dependencies(
 
                 def get_first_arg(keyword_arg_name: str) -> t.Any:
                     if node.args:
-                        table: t.Optional[ast.expr] = node.args[0]
+                        first_arg: t.Optional[ast.expr] = node.args[0]
                     else:
-                        table = next(
+                        first_arg = next(
                             (
                                 keyword.value
                                 for keyword in node.keywords
@@ -1996,11 +2030,11 @@ def _parse_dependencies(
                         )
 
                     try:
-                        expression = to_source(table)
+                        expression = to_source(first_arg)
                         return eval(expression, env)
                     except Exception:
                         raise ConfigError(
-                            f"Error resolving dependencies for '{executable.path}'. References to context / evaluator must be resolvable at parse time.\n\n{expression}"
+                            f"Error resolving dependencies for '{executable.path}'. Argument '{expression.strip()}' must be resolvable at parse time."
                         )
 
                 if func.value.id == "context" and func.attr == "table":
@@ -2079,7 +2113,8 @@ META_FIELD_CONVERTER: t.Dict[str, t.Callable] = {
     "tags": _single_value_or_tuple,
     "grains": _refs_to_sql,
     "references": _refs_to_sql,
-    "table_properties_": lambda value: value,
+    "physical_properties_": lambda value: value,
+    "virtual_properties_": lambda value: value,
     "session_properties_": lambda value: value,
     "allow_partials": exp.convert,
     "signals": lambda values: exp.Tuple(expressions=values),

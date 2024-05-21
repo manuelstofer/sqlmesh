@@ -1,4 +1,4 @@
-FROM apache/spark-py:v3.4.0 AS spark
+FROM apache/spark:3.5.0-python3 AS spark
 
 FROM apache/airflow:$AIRFLOW_VERSION-python3.8
 
@@ -27,7 +27,7 @@ ENV PATH="$PATH:$SPARK_HOME/bin"
 
 # Install Postgres driver and Iceberg for Spark
 RUN curl https://jdbc.postgresql.org/download/postgresql-42.5.0.jar -o /opt/spark/jars/postgresql-42.5.0.jar && \
-    curl -L https://search.maven.org/remotecontent?filepath=org/apache/iceberg/iceberg-spark-runtime-3.4_2.12/1.4.2/iceberg-spark-runtime-3.4_2.12-1.4.2.jar -o /opt/spark/jars/iceberg-spark-runtime-3.4_2.12-1.4.2.jar
+    curl -L https://search.maven.org/remotecontent?filepath=org/apache/iceberg/iceberg-spark-runtime-3.5_2.12/1.5.1/iceberg-spark-runtime-3.5_2.12-1.5.1.jar -o /opt/spark/jars/iceberg-spark-runtime-3.5_2.12-1.5.1.jar
 
 # Install Hadoop
 RUN curl https://dlcdn.apache.org/hadoop/common/hadoop-3.3.6/hadoop-3.3.6.tar.gz -o hadoop-3.3.6.tar.gz && \
@@ -37,9 +37,9 @@ RUN curl https://dlcdn.apache.org/hadoop/common/hadoop-3.3.6/hadoop-3.3.6.tar.gz
 ENV HADOOP_HOME="/opt/hadoop"
 
 # Install Hive
-RUN curl https://dlcdn.apache.org/hive/hive-2.3.9/apache-hive-2.3.9-bin.tar.gz -o apache-hive-2.3.9-bin.tar.gz && \
-    tar xf apache-hive-2.3.9-bin.tar.gz -C /opt/ && \
-    mv /opt/apache-hive-2.3.9-bin /opt/hive
+RUN curl https://dlcdn.apache.org/hive/hive-3.1.3/apache-hive-3.1.3-bin.tar.gz -o apache-hive-3.1.3-bin.tar.gz && \
+    tar xf apache-hive-3.1.3-bin.tar.gz -C /opt/ && \
+    mv /opt/apache-hive-3.1.3-bin /opt/hive
 
 ENV HIVE_HOME="/opt/hive"
 
@@ -49,22 +49,23 @@ ENV AIRFLOW_CONN_SPARK_DEFAULT="spark://local?deploy-mode=client"
 # Airflow configuration
 ENV AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL=3
 
+# SQLMesh configuration
+ENV SQLMESH__DISABLE_ANONYMIZED_ANALYTICS=1
+
 USER airflow
 
 # Install Spark provider for Airflow
-RUN pip install apache-airflow-providers-apache-spark==4.0.1 \
-                apache-airflow-providers-databricks==4.0.1 \
-                apache-airflow-providers-github==2.2.1 \
-                apache-airflow-providers-common-sql==1.4.0
+# skip install pyspark since it's part of the image
+RUN pip install apache-airflow-providers-apache-spark==4.8.0 --no-deps
+RUN pip install apache-airflow-providers-databricks==6.4.0 \
+                apache-airflow-providers-github==2.6.0 \
+                apache-airflow-providers-common-sql==1.13.0 \
+                pandas==1.5.2  # python 3.8 spark 3.4 and pandas 2.0 have issues with casting timestamp
 
 # Install Deps
 USER root
 ADD setup.py /opt/sqlmesh/setup.py
-RUN mkdir /opt/sqlmesh/sqlmesh
+RUN mkdir /opt/sqlmesh/sqlmesh && touch /opt/sqlmesh/sqlmesh/__init__.py
 RUN chown -R airflow /opt/sqlmesh
 USER airflow
-
-# Pin the Pydantic dependency
-RUN pip install "pydantic[email]>=1.10.7,<2.0.0"
-RUN cd /opt/sqlmesh && pip install -e .
-RUN pip install dbt-core
+RUN cd /opt/sqlmesh && pip install -e .[dbt]

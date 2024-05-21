@@ -14,6 +14,7 @@ nav:
     - Project structure:
       - guides/projects.md
       - guides/multi_repo.md
+      - guides/isolated_systems.md
     - Project setup:
       - guides/configuration.md
       - guides/connections.md
@@ -89,7 +90,7 @@ nav:
       - reference/model_configuration.md
 theme:
   name: material
-  logo: sqlmesh.png
+  logo: _readthedocs/html/sqlmesh.png
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
@@ -111,9 +112,13 @@ theme:
     - navigation.tracking
     - navigation.tabs
     - navigation.sections
+    - navigation.top
+    - toc.integrate
+    - toc.follow
 plugins:
   - include-markdown
   - search
+  - glightbox
 markdown_extensions:
   - tables
   - pymdownx.highlight:

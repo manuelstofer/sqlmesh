@@ -294,8 +294,8 @@ class GithubController:
 
         logger.debug(f"Initializing GithubController with paths: {paths} and config: {config}")
 
+        self.config = config
         self._paths = paths
-        self._config = config
         self._token = token
         self._event = event or GithubEvent.from_env()
         logger.debug(f"Github event: {json.dumps(self._event.payload)}")
@@ -325,7 +325,7 @@ class GithubController:
         logger.debug(f"Approvers: {', '.join(self._approvers)}")
         self._context: Context = Context(
             paths=self._paths,
-            config=self._config,
+            config=self.config,
             console=self._console,
         )
 
@@ -360,7 +360,7 @@ class GithubController:
         return Environment.normalize_name(
             "_".join(
                 [
-                    self._event.pull_request_info.repo,
+                    self.bot_config.pr_environment_name or self._event.pull_request_info.repo,
                     str(self._event.pull_request_info.pr_number),
                 ]
             )
@@ -397,6 +397,7 @@ class GithubController:
                 skip_backfill=self.bot_config.skip_pr_backfill,
                 include_unmodified=self.bot_config.pr_include_unmodified,
             )
+        assert self._pr_plan_builder
         return self._pr_plan_builder.build()
 
     @property
@@ -409,6 +410,7 @@ class GithubController:
                 categorizer_config=self.bot_config.auto_categorize_changes,
                 run=self.bot_config.run_on_deploy_to_prod,
             )
+        assert self._prod_plan_builder
         return self._prod_plan_builder.build()
 
     @property
@@ -421,6 +423,7 @@ class GithubController:
                 skip_tests=True,
                 run=self.bot_config.run_on_deploy_to_prod,
             )
+        assert self._prod_plan_with_gaps_builder
         return self._prod_plan_with_gaps_builder.build()
 
     @property
@@ -668,7 +671,7 @@ class GithubController:
                 # Clear out console
                 self._console.consume_captured_output()
                 self._console.log_test_results(
-                    result, output, self._context._test_engine_adapter.dialect
+                    result, output, self._context._test_connection_config._engine_adapter.DIALECT
                 )
                 test_summary = self._console.consume_captured_output()
                 test_title = "Tests Passed" if result.wasSuccessful() else "Tests Failed"
@@ -705,7 +708,7 @@ class GithubController:
         def conclusion_handler(
             conclusion: GithubCheckConclusion,
         ) -> t.Tuple[GithubCheckConclusion, str, t.Optional[str]]:
-            test_summary = f"**List of possible required approvers:**\n"
+            test_summary = "**List of possible required approvers:**\n"
             for user in self._required_approvers:
                 test_summary += f"- `{user.github_username or user.username}`\n"
 

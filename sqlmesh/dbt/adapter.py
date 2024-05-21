@@ -5,7 +5,6 @@ import logging
 import typing as t
 
 import pandas as pd
-from dbt.contracts.relation import Policy
 from sqlglot import exp, parse_one
 
 from sqlmesh.core.dialect import normalize_and_quote, normalize_model_name
@@ -19,6 +18,7 @@ if t.TYPE_CHECKING:
     from dbt.adapters.base import BaseRelation
     from dbt.adapters.base.column import Column
     from dbt.adapters.base.impl import AdapterResponse
+    from sqlmesh.dbt.relation import Policy
 
 
 logger = logging.getLogger(__name__)
@@ -221,7 +221,7 @@ class RuntimeAdapter(BaseAdapter):
         return self.list_relations_without_caching(reference_relation)
 
     def list_relations_without_caching(self, schema_relation: BaseRelation) -> t.List[BaseRelation]:
-        from dbt.contracts.relation import RelationType
+        from sqlmesh.dbt.relation import RelationType
 
         schema = self._normalize(self._schema(schema_relation))
 
@@ -278,9 +278,8 @@ class RuntimeAdapter(BaseAdapter):
         self, sql: str, auto_begin: bool = False, fetch: bool = False
     ) -> t.Tuple[AdapterResponse, agate.Table]:
         from dbt.adapters.base.impl import AdapterResponse
-        from dbt.clients.agate_helper import empty_table
 
-        from sqlmesh.dbt.util import pandas_to_agate
+        from sqlmesh.dbt.util import pandas_to_agate, empty_table
 
         # mypy bug: https://github.com/python/mypy/issues/10740
         exec_func: t.Callable[..., None | pd.DataFrame] = (
@@ -327,7 +326,6 @@ class RuntimeAdapter(BaseAdapter):
         return exp.to_table(physical_table_name, dialect=self.dialect)
 
     def _relation_to_table(self, relation: BaseRelation) -> exp.Table:
-        table = exp.to_table(relation.render(), dialect=self.dialect)
         return exp.to_table(relation.render(), dialect=self.dialect)
 
     def _table_to_relation(self, table: exp.Table) -> BaseRelation:

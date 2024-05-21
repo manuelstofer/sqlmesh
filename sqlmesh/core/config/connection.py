@@ -44,6 +44,7 @@ class ConnectionConfig(abc.ABC, BaseConfig):
     type_: str
     concurrent_tasks: int
     register_comments: bool
+    pre_ping: bool
 
     @property
     @abc.abstractmethod
@@ -105,6 +106,7 @@ class ConnectionConfig(abc.ABC, BaseConfig):
             default_catalog=self.get_catalog(),
             cursor_init=self._cursor_init,
             register_comments=register_comments_override or self.register_comments,
+            pre_ping=self.pre_ping,
             **self._extra_engine_config,
         )
 
@@ -127,6 +129,7 @@ class BaseDuckDBConnectionConfig(ConnectionConfig):
         connector_config: A dictionary of configuration to pass into the duckdb connector.
         concurrent_tasks: The maximum number of tasks that can use this connection concurrently.
         register_comments: Whether or not to register model comments with the SQL engine.
+        pre_ping: Whether or not to pre-ping the connection before starting a new transaction to ensure it is still alive.
     """
 
     extensions: t.List[str] = []
@@ -134,6 +137,7 @@ class BaseDuckDBConnectionConfig(ConnectionConfig):
 
     concurrent_tasks: Literal[1] = 1
     register_comments: bool = True
+    pre_ping: Literal[False] = False
 
     @property
     def _engine_adapter(self) -> t.Type[EngineAdapter]:
@@ -165,21 +169,28 @@ class BaseDuckDBConnectionConfig(ConnectionConfig):
                 except Exception as e:
                     raise ConfigError(f"Failed to set connector config {field} to {setting}: {e}")
 
-            for i, (alias, path) in enumerate((getattr(self, "catalogs", None) or {}).items()):
+            for i, (alias, path_options) in enumerate(
+                (getattr(self, "catalogs", None) or {}).items()
+            ):
                 # we parse_identifier and generate to ensure that `alias` has exactly one set of quotes
                 # regardless of whether it comes in quoted or not
                 alias = exp.parse_identifier(alias, dialect="duckdb").sql(
                     identify=True, dialect="duckdb"
                 )
                 try:
-                    cursor.execute(f"""ATTACH '{path}' AS {alias}""")
+                    query = (
+                        path_options.to_sql(alias)
+                        if isinstance(path_options, DuckDBAttachOptions)
+                        else f"ATTACH '{path_options}' AS {alias}"
+                    )
+                    cursor.execute(query)
                 except BinderException as e:
                     # If a user tries to create a catalog pointing at `:memory:` and with the name `memory`
                     # then we don't want to raise since this happens by default. They are just doing this to
                     # set it as the default catalog.
                     if not (
                         'database with name "memory" already exists' in str(e)
-                        and path == ":memory:"
+                        and path_options == ":memory:"
                     ):
                         raise e
                 if i == 0 and not getattr(self, "database", None):
@@ -214,6 +225,23 @@ class MotherDuckConnectionConfig(BaseDuckDBConnectionConfig):
         return {"database": connection_str}
 
 
+class DuckDBAttachOptions(BaseConfig):
+    type: str
+    path: str
+    read_only: bool = False
+
+    def to_sql(self, alias: str) -> str:
+        options = []
+        # 'duckdb' is actually not a supported type, but we'd like to allow it for
+        # fully qualified attach options or integration testing, similar to duckdb-dbt
+        if self.type != "duckdb":
+            options.append(f"TYPE {self.type.upper()}")
+        if self.read_only:
+            options.append("READ_ONLY")
+        options_sql = f" ({', '.join(options)})" if options else ""
+        return f"ATTACH '{self.path}' AS {alias}{options_sql}"
+
+
 class DuckDBConnectionConfig(BaseDuckDBConnectionConfig):
     """Configuration for the DuckDB connection.
 
@@ -223,7 +251,7 @@ class DuckDBConnectionConfig(BaseDuckDBConnectionConfig):
     """
 
     database: t.Optional[str] = None
-    catalogs: t.Optional[t.Dict[str, str]] = None
+    catalogs: t.Optional[t.Dict[str, t.Union[str, DuckDBAttachOptions]]] = None
 
     type_: Literal["duckdb"] = Field(alias="type", default="duckdb")
 
@@ -253,18 +281,19 @@ class DuckDBConnectionConfig(BaseDuckDBConnectionConfig):
             data_files.add(self.database)
         data_files.discard(":memory:")
         for data_file in data_files:
-            if adapter := DuckDBConnectionConfig._data_file_to_adapter.get(data_file):
-                logger.info(
-                    f"Using existing DuckDB adapter due to overlapping data file: {data_file}"
-                )
+            key = data_file if isinstance(data_file, str) else data_file.path
+            if adapter := DuckDBConnectionConfig._data_file_to_adapter.get(key):
+                logger.info(f"Using existing DuckDB adapter due to overlapping data file: {key}")
                 return adapter
+
         if data_files:
             logger.info(f"Creating new DuckDB adapter for data files: {data_files}")
         else:
             logger.info("Creating new DuckDB adapter for in-memory database")
         adapter = super().create_engine_adapter(register_comments_override)
         for data_file in data_files:
-            DuckDBConnectionConfig._data_file_to_adapter[data_file] = adapter
+            key = data_file if isinstance(data_file, str) else data_file.path
+            DuckDBConnectionConfig._data_file_to_adapter[key] = adapter
         return adapter
 
     def get_catalog(self) -> t.Optional[str]:
@@ -294,6 +323,7 @@ class SnowflakeConnectionConfig(ConnectionConfig):
         private_key_path: The optional path to the private key to use for authentication. This would be used instead of `private_key`.
         private_key_passphrase: The optional passphrase to use to decrypt `private_key` or `private_key_path`. Keys can be created without encryption so only provide this if needed.
         register_comments: Whether or not to register model comments with the SQL engine.
+        pre_ping: Whether or not to pre-ping the connection before starting a new transaction to ensure it is still alive.
     """
 
     account: str
@@ -312,6 +342,7 @@ class SnowflakeConnectionConfig(ConnectionConfig):
 
     concurrent_tasks: int = 4
     register_comments: bool = True
+    pre_ping: bool = False
 
     type_: Literal["snowflake"] = Field(alias="type", default="snowflake")
 
@@ -471,6 +502,7 @@ class DatabricksConnectionConfig(ConnectionConfig):
             Defaults to deriving the cluster id from the `http_path` value.
         force_databricks_connect: Force all queries to run using Databricks Connect instead of the SQL connector.
         disable_databricks_connect: Even if databricks connect is installed, do not use it.
+        pre_ping: Whether or not to pre-ping the connection before starting a new transaction to ensure it is still alive.
     """
 
     server_hostname: t.Optional[str] = None
@@ -487,6 +519,7 @@ class DatabricksConnectionConfig(ConnectionConfig):
 
     concurrent_tasks: int = 1
     register_comments: bool = True
+    pre_ping: Literal[False] = False
 
     type_: Literal["databricks"] = Field(alias="type", default="databricks")
 
@@ -571,7 +604,9 @@ class DatabricksConnectionConfig(ConnectionConfig):
         from sqlmesh import RuntimeEnv
 
         if not self.use_spark_session_only:
-            return {}
+            return {
+                "_user_agent_entry": "sqlmesh",
+            }
 
         if RuntimeEnv.get().is_databricks:
             from pyspark.sql import SparkSession
@@ -588,7 +623,9 @@ class DatabricksConnectionConfig(ConnectionConfig):
                 host=self.databricks_connect_server_hostname,
                 token=self.databricks_connect_access_token,
                 cluster_id=self.databricks_connect_cluster_id,
-            ).getOrCreate(),
+            )
+            .userAgent("sqlmesh")
+            .getOrCreate(),
             catalog=self.catalog,
         )
 
@@ -651,6 +688,7 @@ class BigQueryConnectionConfig(ConnectionConfig):
 
     concurrent_tasks: int = 1
     register_comments: bool = True
+    pre_ping: Literal[False] = False
 
     type_: Literal["bigquery"] = Field(alias="type", default="bigquery")
 
@@ -737,6 +775,7 @@ class GCPPostgresConnectionConfig(ConnectionConfig):
         password: The postgres user's password. Only needed when the user is a postgres user.
         enable_iam_auth: Set to True when user is an IAM user.
         db: Name of the db to connect to.
+        pre_ping: Whether or not to pre-ping the connection before starting a new transaction to ensure it is still alive.
     """
 
     instance_connection_string: str
@@ -750,6 +789,7 @@ class GCPPostgresConnectionConfig(ConnectionConfig):
     type_: Literal["gcp_postgres"] = Field(alias="type", default="gcp_postgres")
     concurrent_tasks: int = 4
     register_comments: bool = True
+    pre_ping: bool = True
 
     @model_validator(mode="before")
     @model_validator_v1_args
@@ -824,6 +864,7 @@ class RedshiftConnectionConfig(ConnectionConfig):
         is_serverless: Redshift end-point is serverless or provisional. Default value false.
         serverless_acct_id: The account ID of the serverless. Default value None
         serverless_work_group: The name of work group for serverless end point. Default value None.
+        pre_ping: Whether or not to pre-ping the connection before starting a new transaction to ensure it is still alive.
     """
 
     user: t.Optional[str] = None
@@ -850,6 +891,7 @@ class RedshiftConnectionConfig(ConnectionConfig):
 
     concurrent_tasks: int = 4
     register_comments: bool = True
+    pre_ping: bool = False
 
     type_: Literal["redshift"] = Field(alias="type", default="redshift")
 
@@ -903,6 +945,7 @@ class PostgresConnectionConfig(ConnectionConfig):
 
     concurrent_tasks: int = 4
     register_comments: bool = True
+    pre_ping: bool = True
 
     type_: Literal["postgres"] = Field(alias="type", default="postgres")
 
@@ -941,6 +984,7 @@ class MySQLConnectionConfig(ConnectionConfig):
 
     concurrent_tasks: int = 4
     register_comments: bool = True
+    pre_ping: bool = True
 
     type_: Literal["mysql"] = Field(alias="type", default="mysql")
 
@@ -993,6 +1037,7 @@ class MSSQLConnectionConfig(ConnectionConfig):
 
     concurrent_tasks: int = 4
     register_comments: bool = True
+    pre_ping: bool = True
 
     type_: Literal["mssql"] = Field(alias="type", default="mssql")
 
@@ -1035,6 +1080,7 @@ class SparkConnectionConfig(ConnectionConfig):
 
     concurrent_tasks: int = 4
     register_comments: bool = True
+    pre_ping: Literal[False] = False
 
     type_: Literal["spark"] = Field(alias="type", default="spark")
 
@@ -1147,6 +1193,7 @@ class TrinoConnectionConfig(ConnectionConfig):
 
     concurrent_tasks: int = 4
     register_comments: bool = True
+    pre_ping: Literal[False] = False
 
     type_: Literal["trino"] = Field(alias="type", default="trino")
 

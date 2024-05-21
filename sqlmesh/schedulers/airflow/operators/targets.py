@@ -116,6 +116,7 @@ class SnapshotEvaluationTarget(BaseTarget[commands.EvaluateCommandPayload], Pyda
         end: The end of the interval to evaluate.
         execution_time: The date/time time reference to use for execution time. Defaults to now.
         deployability_index: Determines snapshots that are deployable in the context of this evaluation.
+        batch_index: For snapshots that are part of a batch, this is their position in the batch
     """
 
     command_type: commands.CommandType = commands.CommandType.EVALUATE
@@ -131,6 +132,7 @@ class SnapshotEvaluationTarget(BaseTarget[commands.EvaluateCommandPayload], Pyda
     execution_time: t.Optional[TimeLike] = None
     deployability_index: DeployabilityIndex
     plan_id: t.Optional[str] = None
+    batch_index: int = 0
 
     def post_hook(
         self,
@@ -160,13 +162,14 @@ class SnapshotEvaluationTarget(BaseTarget[commands.EvaluateCommandPayload], Pyda
             end=self._get_end(context),
             execution_time=self._get_execution_time(context),
             deployability_index=self.deployability_index,
+            batch_index=self.batch_index,
         )
 
     def _get_start(self, context: Context) -> TimeLike:
         if self.start:
             return self.start
 
-        start = self.snapshot.node.interval_unit.cron_floor(context["dag_run"].data_interval_start)
+        start = self.snapshot.node.interval_unit.cron_floor(context["dag_run"].data_interval_start)  # type: ignore
         if not self.snapshot.is_model:
             return start
 
@@ -174,7 +177,7 @@ class SnapshotEvaluationTarget(BaseTarget[commands.EvaluateCommandPayload], Pyda
 
     def _get_end(self, context: Context) -> TimeLike:
         return self.end or self.snapshot.node.interval_unit.cron_floor(
-            context["dag_run"].data_interval_end
+            context["dag_run"].data_interval_end  # type: ignore
         )
 
     def _get_execution_time(self, context: Context) -> TimeLike:

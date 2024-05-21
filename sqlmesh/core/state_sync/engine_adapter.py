@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import time
 import typing as t
 from collections import defaultdict
 from copy import deepcopy
@@ -29,6 +30,7 @@ from sqlglot import __version__ as SQLGLOT_VERSION
 from sqlglot import exp
 from sqlglot.helper import seq_get
 
+from sqlmesh.core import analytics
 from sqlmesh.core import constants as c
 from sqlmesh.core.audit import ModelAudit
 from sqlmesh.core.console import Console, get_console
@@ -397,7 +399,7 @@ class EngineAdapterStateSync(CommonStateSyncMixin, StateSync):
         )
         if exclude_external:
             query = query.where(exp.column("kind_name").neq(ModelKindName.EXTERNAL.value))
-        return {name for name, in self._fetchall(query)}
+        return {name for (name,) in self._fetchall(query)}
 
     def reset(self, default_catalog: t.Optional[str]) -> None:
         """Resets the state store to the state when it was first initialized."""
@@ -457,6 +459,45 @@ class EngineAdapterStateSync(CommonStateSyncMixin, StateSync):
             return query.lock(copy=False)
         return query
 
+    def _get_snapshots_expressions(
+        self,
+        snapshot_ids: t.Optional[t.Iterable[SnapshotIdLike]] = None,
+        lock_for_update: bool = False,
+        hydrate_seeds: bool = False,
+        batch_size: t.Optional[int] = None,
+    ) -> t.Iterator[exp.Expression]:
+        for where in (
+            [None]
+            if snapshot_ids is None
+            else self._snapshot_id_filter(snapshot_ids, alias="snapshots", batch_size=batch_size)
+        ):
+            query = (
+                exp.select(
+                    "snapshots.snapshot",
+                    "snapshots.name",
+                    "snapshots.identifier",
+                    "snapshots.version",
+                )
+                .from_(exp.to_table(self.snapshots_table).as_("snapshots"))
+                .where(where)
+            )
+            if hydrate_seeds:
+                query = query.select(exp.column("content", table="seeds")).join(
+                    exp.to_table(self.seeds_table).as_("seeds"),
+                    on=exp.and_(
+                        exp.column("name", table="snapshots").eq(exp.column("name", table="seeds")),
+                        exp.column("version", table="snapshots").eq(
+                            exp.column("version", table="seeds")
+                        ),
+                    ),
+                    join_type="left",
+                )
+            else:
+                query = query.select(exp.Null().as_("content"))
+            if lock_for_update:
+                query = query.lock(copy=False)
+            yield query
+
     def _get_snapshots(
         self,
         snapshot_ids: t.Optional[t.Iterable[SnapshotIdLike]] = None,
@@ -479,40 +520,15 @@ class EngineAdapterStateSync(CommonStateSyncMixin, StateSync):
         duplicates: t.Dict[SnapshotId, Snapshot] = {}
         model_cache = ModelCache(self._context_path / c.CACHE)
 
-        for where in (
-            [None] if snapshot_ids is None else self._snapshot_id_filter(snapshot_ids, "snapshots")
-        ):
-            query = (
-                exp.select(
-                    "snapshots.snapshot",
-                    "snapshots.name",
-                    "snapshots.identifier",
+        for query in self._get_snapshots_expressions(snapshot_ids, lock_for_update, hydrate_seeds):
+            for serialized_snapshot, name, identifier, _, seed_content in self._fetchall(query):
+                snapshot = parse_snapshot(
+                    model_cache,
+                    serialized_snapshot=serialized_snapshot,
+                    name=name,
+                    identifier=identifier,
+                    seed_content=seed_content,
                 )
-                .from_(exp.to_table(self.snapshots_table).as_("snapshots"))
-                .where(where)
-            )
-            if hydrate_seeds:
-                query = query.select(exp.column("content", table="seeds")).join(
-                    exp.to_table(self.seeds_table).as_("seeds"),
-                    on=exp.and_(
-                        exp.column("name", table="snapshots").eq(exp.column("name", table="seeds")),
-                        exp.column("version", table="snapshots").eq(
-                            exp.column("version", table="seeds")
-                        ),
-                    ),
-                    join_type="left",
-                )
-            elif lock_for_update:
-                query = query.lock(copy=False)
-
-            for row in self._fetchall(query):
-                payload = json.loads(row[0])
-
-                def loader() -> Node:
-                    return parse_obj_as(Node, payload["node"])  # type: ignore
-
-                payload["node"] = model_cache.get_or_load(f"{row[1]}_{row[2]}", loader=loader)  # type: ignore
-                snapshot = Snapshot(**payload)
                 snapshot_id = snapshot.snapshot_id
                 if snapshot_id in snapshots:
                     other = duplicates.get(snapshot_id, snapshots[snapshot_id])
@@ -522,9 +538,6 @@ class EngineAdapterStateSync(CommonStateSyncMixin, StateSync):
                     snapshots[snapshot_id] = duplicates[snapshot_id]
                 else:
                     snapshots[snapshot_id] = snapshot
-
-                if hydrate_seeds and isinstance(snapshot.node, SeedModel) and row[-1]:
-                    snapshot.node = t.cast(SeedModel, snapshot.node).to_hydrated(row[-1])
 
         if snapshots and hydrate_intervals:
             _, intervals = self._get_snapshot_intervals(snapshots.values())
@@ -673,7 +686,6 @@ class EngineAdapterStateSync(CommonStateSyncMixin, StateSync):
     def remove_interval(
         self,
         snapshot_intervals: t.Sequence[t.Tuple[SnapshotInfoLike, Interval]],
-        execution_time: t.Optional[TimeLike] = None,
         remove_shared_versions: bool = False,
     ) -> None:
         intervals_to_remove: t.Sequence[
@@ -942,6 +954,8 @@ class EngineAdapterStateSync(CommonStateSyncMixin, StateSync):
         """Migrate the state sync to the latest SQLMesh / SQLGlot version."""
         versions = self.get_versions(validate=False)
 
+        migration_start_ts = time.perf_counter()
+
         try:
             migrate_rows = self._apply_migrations(default_catalog, skip_backup)
 
@@ -953,11 +967,24 @@ class EngineAdapterStateSync(CommonStateSyncMixin, StateSync):
                 # Cleanup plan DAGs since we currently don't migrate snapshot records that are in there.
                 self.engine_adapter.delete_from(self.plan_dags_table, "TRUE")
             self._update_versions()
+
+            analytics.collector.on_migration_end(
+                from_sqlmesh_version=versions.sqlmesh_version,
+                state_sync_type=self.state_type(),
+                migration_time_sec=time.perf_counter() - migration_start_ts,
+            )
         except Exception as e:
             if skip_backup:
                 logger.error("Backup was skipped so no rollback was attempted.")
             else:
                 self.rollback()
+
+            analytics.collector.on_migration_end(
+                from_sqlmesh_version=versions.sqlmesh_version,
+                state_sync_type=self.state_type(),
+                migration_time_sec=time.perf_counter() - migration_start_ts,
+                error=e,
+            )
 
             self.console.stop_migration_progress(success=False)
             raise SQLMeshError("SQLMesh migration failed.") from e
@@ -988,6 +1015,9 @@ class EngineAdapterStateSync(CommonStateSyncMixin, StateSync):
                     self._restore_table(optional_table, _backup_table_name(optional_table))
 
         logger.info("Migration rollback successful.")
+
+    def state_type(self) -> str:
+        return self.engine_adapter.dialect
 
     def _backup_state(self) -> None:
         for table in (
@@ -1279,7 +1309,7 @@ class EngineAdapterStateSync(CommonStateSyncMixin, StateSync):
         batches = self._snapshot_batches(name_versions)
 
         if not name_versions:
-            return exp.false()
+            yield exp.false()
         elif self.engine_adapter.SUPPORTS_TUPLE_IN:
             for versions in batches:
                 yield t.cast(
@@ -1431,6 +1461,27 @@ def _backup_table_name(table_name: TableName) -> exp.Table:
 
 def _snapshot_to_json(snapshot: Snapshot) -> str:
     return snapshot.json(exclude={"intervals", "dev_intervals"})
+
+
+def parse_snapshot(
+    model_cache: ModelCache,
+    serialized_snapshot: str,
+    name: str,
+    identifier: str,
+    seed_content: t.Optional[str],
+) -> Snapshot:
+    payload = json.loads(serialized_snapshot)
+
+    def loader() -> Node:
+        return parse_obj_as(Node, payload["node"])  # type: ignore
+
+    payload["node"] = model_cache.get_or_load(f"{name}_{identifier}", loader=loader)  # type: ignore
+    snapshot = Snapshot(**payload)
+
+    if seed_content and isinstance(snapshot.node, SeedModel):
+        snapshot.node = snapshot.node.to_hydrated(seed_content)
+
+    return snapshot
 
 
 class LazilyParsedSnapshots:

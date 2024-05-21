@@ -48,7 +48,7 @@ def test_select_models(mocker: MockerFixture, make_snapshot, default_catalog: t.
         default_catalog=default_catalog,
     )
     standalone_audit = StandaloneAudit(
-        name="test_audit", query=d.parse_one(f"SELECT * FROM added_model WHERE a IS NULL")
+        name="test_audit", query=d.parse_one("SELECT * FROM added_model WHERE a IS NULL")
     )
 
     modified_model_v1_snapshot = make_snapshot(modified_model_v1)
@@ -372,6 +372,19 @@ def test_expand_model_selections(
 
     selector = Selector(mocker.Mock(), models)
     assert selector.expand_model_selections(selections) == output
+
+
+def test_model_selection_normalized(mocker: MockerFixture, make_snapshot):
+    models: UniqueKeyDict[str, Model] = UniqueKeyDict("models")
+    model = SqlModel(
+        name="`db.test_Model`",
+        query=d.parse_one("SELECT 1 AS a"),
+        tags=["tag1"],
+        dialect="bigquery",
+    )
+    models[model.fqn] = model
+    selector = Selector(mocker.Mock(), models, dialect="bigquery")
+    assert selector.expand_model_selections(["db.test_Model"]) == {'"db"."test_Model"'}
 
 
 @pytest.mark.parametrize(

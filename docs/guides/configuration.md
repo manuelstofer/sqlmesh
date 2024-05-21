@@ -45,12 +45,12 @@ In contrast, the `gateways` key takes dictionaries as values, and each gateway d
 
 ```yaml linenums="1"
 gateways:
-    my_gateway:
-        connection:
-            type: snowflake
-            user: <username>
-            password: <password>
-            account: <account>
+  my_gateway:
+    connection:
+      type: snowflake
+      user: <username>
+      password: <password>
+      account: <account>
 ```
 
 Gateway dictionaries can contain multiple connection dictionaries if different SQLMesh components should use different connections (e.g., SQLMesh `test`s should run in a different database than SQLMesh `plan`s). See the [gateways section](#gateways) for more information on gateway configuration.
@@ -114,12 +114,12 @@ The examples specify a Snowflake connection whose password is stored in an envir
 
     ```yaml linenums="1"
     gateways:
-        my_gateway:
-            connection:
-                type: snowflake
-                user: <username>
-                password: {{ env_var('SNOWFLAKE_PW') }}
-                account: <account>
+      my_gateway:
+        connection:
+          type: snowflake
+          user: <username>
+          password: {{ env_var('SNOWFLAKE_PW') }}
+          account: <account>
     ```
 
 === "Python"
@@ -161,12 +161,12 @@ For example, we can override the password specified in a Snowflake connection. T
 
 ```yaml linenums="1"
 gateways:
-    my_gateway:
-        connection:
-            type: snowflake
-            user: <username>
-            password: dummy_pw
-            account: <account>
+  my_gateway:
+    connection:
+      type: snowflake
+      user: <username>
+      password: dummy_pw
+      account: <account>
 ```
 
 We can override the `dummy_pw` value with the true password `real_pw` by creating the environment variable. This example demonstrates creating the variable with the bash `export` function:
@@ -194,11 +194,11 @@ Conceptually, we can group the root level parameters into the following types. E
 
 The rest of this page provides additional detail for some of the configuration options and provides brief examples. Comprehensive lists of configuration options are at the [configuration reference page](../reference/configuration.md).
 
-### Environment schemas
+### Table/view storage locations
 
 SQLMesh creates schemas, physical tables, and views in the data warehouse/engine. Learn more about why and how SQLMesh creates schema in the ["Why does SQLMesh create schemas?" FAQ](../faq/faq.md#schema-question).
 
-The default SQLMesh behavior described in the FAQ is appropriate for most deployments, but you can override where SQLMesh creates physical tables and views with the `physical_schema_override` and `environment_suffix_target` configuration options. These options are in the [environments](../reference/configuration.md#environments) section of the configuration reference page.
+The default SQLMesh behavior described in the FAQ is appropriate for most deployments, but you can override where SQLMesh creates physical tables and views with the `physical_schema_override`, `environment_suffix_target`, and `environment_catalog_mapping` configuration options. These options are in the [environments](../reference/configuration.md#environments) section of the configuration reference page.
 
 #### Physical table schemas
 By default, SQLMesh creates physical tables for a model with a naming convention of `sqlmesh__[model schema]`.
@@ -211,7 +211,7 @@ This example configuration overrides the default physical schemas for the `my_sc
 
     ```yaml linenums="1"
     physical_schema_override:
-        my_schema: my_new_schema
+      my_schema: my_new_schema
     ```
 
 === "Python"
@@ -229,7 +229,7 @@ If you had a model name of `my_schema.table`, the physical table would be create
 
 This key only applies to the _physical tables_ that SQLMesh creates - the views are still created in `my_schema` (prod) or `my_schema__<env>`.
 
-#### Environment view schemas
+#### Disable environment-specific schemas
 
 SQLMesh stores `prod` environment views in the schema in a model's name - for example, the `prod` views for a model `my_schema.users` will be located in `my_schema`.
 
@@ -280,9 +280,9 @@ Config example:
 
     ```yaml linenums="1"
     environment_catalog_mapping:
-        '^prod$': prod
-        '^dev.*': dev
-        '^analytics_repo.*': cicd
+      '^prod$': prod
+      '^dev.*': dev
+      '^analytics_repo.*': cicd
     ```
 
 === "Python"
@@ -306,17 +306,11 @@ With the example configuration above, SQLMesh would evaluate environment names a
 * If the environment name starts with `dev`, the catalog will be `dev`.
 * If the environment name starts with `analytics_repo`, the catalog will be `cicd`.
 
-*Note:* This feature is only available for engines that support querying across catalogs. At the time of writing, these engines are supported:
+*Note:* This feature is only available for engines that support querying across catalogs. At the time of writing, the following engines are **NOT** supported:
 
-* [BigQuery](../integrations/engines/bigquery.md)
-* [Databricks](../integrations/engines/databricks.md)
-* [DuckDB](../integrations/engines/duckdb.md)
-* [MotherDuck](../integrations/engines/motherduck.md)
 * [MySQL](../integrations/engines/mysql.md)
-* [MSSQL](../integrations/engines/mssql.md)
-* [Snowflake](../integrations/engines/snowflake.md)
-* [Spark](../integrations/engines/spark.md)
-* [Trino](../integrations/engines/trino.md)
+* [Postgres](../integrations/engines/postgres.md)
+* [GCP Postgres](../integrations/engines/gcp-postgres.md)
 
 ##### Regex Tips
 * If you are less familiar with regex, you can use a tool like [regex101](https://regex101.com/) to help you build your regex patterns.
@@ -343,11 +337,11 @@ Example showing default values:
 
     ```yaml linenums="1"
     plan:
-        auto_categorize_changes:
-            external: full
-            python: off
-            sql: full
-            seed: full
+      auto_categorize_changes:
+        external: full
+        python: off
+        sql: full
+        seed: full
     ```
 
 === "Python"
@@ -386,15 +380,15 @@ Each gateway key represents a unique gateway name and configures its connections
 
     ```yaml linenums="1"
     gateways:
-        my_gateway:
-            connection:
-                ...
-            state_connection:
-                ...
-            test_connection:
-                ...
-            scheduler:
-                ...
+      my_gateway:
+        connection:
+          ...
+        state_connection:
+          ...
+        test_connection:
+          ...
+        scheduler:
+          ...
     ```
 
 === "Python"
@@ -440,12 +434,12 @@ Example snowflake connection configuration:
 
     ```yaml linenums="1"
     gateways:
-        my_gateway:
-            connection:
-                type: snowflake
-                user: <username>
-                password: <password>
-                account: <account>
+      my_gateway:
+        connection:
+          type: snowflake
+          user: <username>
+          password: <password>
+          account: <account>
     ```
 
 === "Python"
@@ -521,14 +515,14 @@ Example postgres state connection configuration:
 
     ```yaml linenums="1"
     gateways:
-        my_gateway:
-            state_connection:
-                type: postgres
-                host: <host>
-                port: <port>
-                user: <username>
-                password: <password>
-                database: <database>
+      my_gateway:
+        state_connection:
+          type: postgres
+          host: <host>
+          port: <port>
+          user: <username>
+          password: <password>
+          database: <database>
     ```
 
 === "Python"
@@ -569,15 +563,15 @@ Example configuration to store state information in a postgres database's `custo
 
     ```yaml linenums="1"
     gateways:
-        my_gateway:
-            state_connection:
-                type: postgres
-                host: <host>
-                port: <port>
-                user: <username>
-                password: <password>
-                database: <database>
-            state_schema: custom_name
+      my_gateway:
+        state_connection:
+          type: postgres
+          host: <host>
+          port: <port>
+          user: <username>
+          password: <password>
+          database: <database>
+        state_schema: custom_name
     ```
 
 === "Python"
@@ -618,9 +612,9 @@ Configuration for a connection used to run unit tests. An in-memory DuckDB datab
 
     ```yaml linenums="1"
     gateways:
-        my_gateway:
-            test_connection:
-                type: duckdb
+      my_gateway:
+        test_connection:
+          type: duckdb
     ```
 
 === "Python"
@@ -659,9 +653,9 @@ Example configuration:
 
     ```yaml linenums="1"
     gateways:
-        my_gateway:
-            scheduler:
-                type: builtin
+      my_gateway:
+        scheduler:
+          type: builtin
     ```
 
 === "Python"
@@ -696,12 +690,12 @@ Example configuration:
 
     ```yaml linenums="1"
     gateways:
-        my_gateway:
-            scheduler:
-                type: airflow
-                airflow_url: <airflow_url>
-                username: <username>
-                password: <password>
+      my_gateway:
+        scheduler:
+          type: airflow
+          airflow_url: <airflow_url>
+          username: <username>
+          password: <password>
     ```
 
 === "Python"
@@ -742,10 +736,10 @@ Example configuration:
 
     ```yaml linenums="1"
     gateways:
-        my_gateway:
-            scheduler:
-                type: cloud_composer
-                airflow_url: <airflow_url>
+      my_gateway:
+        scheduler:
+          type: cloud_composer
+          airflow_url: <airflow_url>
     ```
 
 === "Python"
@@ -790,8 +784,8 @@ Example configuration:
 
     ```yaml linenums="1"
     gateways:
-        my_gateway:
-            <gateway specification>
+      my_gateway:
+        <gateway specification>
     default_gateway: my_gateway
     ```
 
@@ -827,16 +821,16 @@ Example configuration specifying a Postgres default connection, in-memory DuckDB
 
     ```yaml linenums="1"
     default_connection:
-        type: postgres
-        host: <host>
-        port: <port>
-        user: <username>
-        password: <password>
-        database: <database>
+      type: postgres
+      host: <host>
+      port: <port>
+      user: <username>
+      password: <password>
+      database: <database>
     default_test_connection:
-        type: duckdb
+      type: duckdb
     default_scheduler:
-        type: builtin
+      type: builtin
     ```
 
 === "Python"
@@ -878,9 +872,9 @@ Example configuration:
 
     ```yaml linenums="1"
     model_defaults:
-        dialect: snowflake
-        owner: jen
-        start: 2022-01-01
+      dialect: snowflake
+      owner: jen
+      start: 2022-01-01
     ```
 
 === "Python"
@@ -913,8 +907,8 @@ The `VIEW`, `FULL`, and `EMBEDDED` model kinds are specified by name only, while
 
     ```sql linenums="1"
     MODEL(
-        name docs_example.full_model,
-        kind FULL
+      name docs_example.full_model,
+      kind FULL
     );
     ```
 
@@ -922,10 +916,10 @@ The `VIEW`, `FULL`, and `EMBEDDED` model kinds are specified by name only, while
 
     ```sql linenums="1"
     MODEL(
-        name docs_example.incremental_model,
-        kind INCREMENTAL_BY_TIME_RANGE (
-            time_column model_time_column
-        )
+      name docs_example.incremental_model,
+      kind INCREMENTAL_BY_TIME_RANGE (
+        time_column model_time_column
+      )
     );
     ```
 

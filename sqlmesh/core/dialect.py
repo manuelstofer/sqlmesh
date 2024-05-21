@@ -12,6 +12,7 @@ import pandas as pd
 from sqlglot import Dialect, Generator, ParseError, Parser, Tokenizer, TokenType, exp
 from sqlglot.dialects.dialect import DialectType
 from sqlglot.dialects.snowflake import Snowflake
+from sqlglot.helper import seq_get
 from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
 from sqlglot.optimizer.qualify_columns import quote_identifiers
 from sqlglot.optimizer.qualify_tables import qualify_tables
@@ -26,7 +27,6 @@ from sqlmesh.utils.pandas import columns_to_types_from_df
 if t.TYPE_CHECKING:
     from sqlglot._typing import E
 
-    from sqlmesh.utils.pandas import PandasNamedTuple
 
 SQLMESH_MACRO_PREFIX = "@"
 
@@ -199,46 +199,54 @@ def _parse_macro(self: Parser, keyword_macro: str = "") -> t.Optional[exp.Expres
     index = self._index
     field = self._parse_primary() or self._parse_function(functions={}) or self._parse_id_var()
 
-    if isinstance(field, exp.Func):
-        macro_name = field.name.upper()
-        if macro_name != keyword_macro and macro_name in KEYWORD_MACROS:
-            self._retreat(index)
-            return None
+    def _build_macro(field: t.Optional[exp.Expression]) -> t.Optional[exp.Expression]:
+        if isinstance(field, exp.Func):
+            macro_name = field.name.upper()
+            if macro_name != keyword_macro and macro_name in KEYWORD_MACROS:
+                self._retreat(index)
+                return None
 
-        if isinstance(field, exp.Anonymous):
-            if macro_name == "DEF":
-                return self.expression(
-                    MacroDef,
-                    this=field.expressions[0],
-                    expression=field.expressions[1],
+            if isinstance(field, exp.Anonymous):
+                if macro_name == "DEF":
+                    return self.expression(
+                        MacroDef,
+                        this=field.expressions[0],
+                        expression=field.expressions[1],
+                        comments=comments,
+                    )
+                if macro_name == "SQL":
+                    into = field.expressions[1].this.lower() if len(field.expressions) > 1 else None
+                    return self.expression(
+                        MacroSQL, this=field.expressions[0], into=into, comments=comments
+                    )
+            else:
+                field = self.expression(
+                    exp.Anonymous,
+                    this=field.sql_name(),
+                    expressions=list(field.args.values()),
                     comments=comments,
                 )
-            if macro_name == "SQL":
-                into = field.expressions[1].this.lower() if len(field.expressions) > 1 else None
-                return self.expression(
-                    MacroSQL, this=field.expressions[0], into=into, comments=comments
-                )
-        else:
-            field = self.expression(
-                exp.Anonymous,
-                this=field.sql_name(),
-                expressions=list(field.args.values()),
-                comments=comments,
+
+            return self.expression(MacroFunc, this=field, comments=comments)
+
+        if field is None:
+            return None
+
+        if field.is_string or (isinstance(field, exp.Identifier) and field.quoted):
+            return self.expression(
+                MacroStrReplace, this=exp.Literal.string(field.this), comments=comments
             )
 
-        return self.expression(MacroFunc, this=field, comments=comments)
+        if "@" in field.this:
+            return field
+        return self.expression(MacroVar, this=field.this, comments=comments)
 
-    if field is None:
-        return None
+    if isinstance(field, exp.Window):
+        field.set("this", _build_macro(field.this))
+    else:
+        field = _build_macro(field)
 
-    if field.is_string or (isinstance(field, exp.Identifier) and field.quoted):
-        return self.expression(
-            MacroStrReplace, this=exp.Literal.string(field.this), comments=comments
-        )
-
-    if "@" in field.this:
-        return field
-    return self.expression(MacroVar, this=field.this, comments=comments)
+    return field
 
 
 KEYWORD_MACROS = {"WITH", "JOIN", "WHERE", "GROUP_BY", "HAVING", "ORDER_BY", "LIMIT"}
@@ -383,7 +391,9 @@ def _parse_types(
     allow_identifiers: bool = True,
 ) -> t.Optional[exp.Expression]:
     start = self._curr
-    parsed_type = self.__parse_types(check_func=check_func, schema=schema, allow_identifiers=allow_identifiers)  # type: ignore
+    parsed_type = self.__parse_types(  # type: ignore
+        check_func=check_func, schema=schema, allow_identifiers=allow_identifiers
+    )
 
     if schema and parsed_type:
         parsed_type.meta["sql"] = self._find_sql(start, self._prev)
@@ -430,32 +440,37 @@ def _parse_if(self: Parser) -> t.Optional[exp.Expression]:
         self._match(TokenType.COMMA)
 
         # Try to parse a known statement, otherwise fall back to parsing a command
-        index = self._index
-        statement = self._parse_statement()
-        if isinstance(statement, exp.Command):
-            self._retreat(index)
-            statement = self._parse_as_command(self._curr)
+        # Since the trailing `)` token is not expected by the statement parsers, we
+        # remove it from the token stream before trying to parse the statement.
+        last_token = self._tokens[-1]
+        if last_token.token_type == TokenType.R_PAREN:
+            self._tokens[-2].comments.extend(last_token.comments)
+            self._tokens.pop()
+        else:
+            self.raise_error("Expecting )")
 
-            # Unconsume the right parenthesis as well as omit it from the command's text
-            self._retreat(self._index - 1)
-            statement.set("expression", statement.expression[:-1])
-
-        # Return anonymous so that _parse_macro can create a MacroFunc with this value
-        self._match_r_paren()
-        return exp.Anonymous(this="IF", expressions=[cond, statement])
+        return exp.Anonymous(this="IF", expressions=[cond, self._parse_statement()])
 
 
 def _create_parser(parser_type: t.Type[exp.Expression], table_keys: t.List[str]) -> t.Callable:
     def parse(self: Parser) -> t.Optional[exp.Expression]:
         from sqlmesh.core.model.kind import ModelKindName
 
-        expressions = []
+        expressions: t.List[exp.Expression] = []
 
         while True:
-            key_expression = self._parse_id_var(any_token=True)
+            prev_property = seq_get(expressions, -1)
+            if not self._match(TokenType.COMMA, expression=prev_property) and expressions:
+                break
 
+            key_expression = self._parse_id_var(any_token=True)
             if not key_expression:
                 break
+
+            # This allows macro functions that programmaticaly generate the property key-value pair
+            if isinstance(key_expression, MacroFunc):
+                expressions.append(key_expression)
+                continue
 
             key = key_expression.name.lower()
 
@@ -500,9 +515,6 @@ def _create_parser(parser_type: t.Type[exp.Expression], table_keys: t.List[str])
                 value.meta["sql"] = self._find_sql(start, self._prev)
 
             expressions.append(self.expression(exp.Property, this=key, value=value))
-
-            if not self._match(TokenType.COMMA, expression=expressions[-1]):
-                break
 
         return self.expression(parser_type, expressions=expressions)
 
@@ -792,7 +804,8 @@ def extend_sqlglot() -> None:
                     DColonCast: lambda self, e: f"{self.sql(e, 'this')}::{self.sql(e, 'to')}",
                     Jinja: lambda self, e: e.name,
                     JinjaQuery: lambda self, e: f"{JINJA_QUERY_BEGIN};\n{e.name}\n{JINJA_END};",
-                    JinjaStatement: lambda self, e: f"{JINJA_STATEMENT_BEGIN};\n{e.name}\n{JINJA_END};",
+                    JinjaStatement: lambda self,
+                    e: f"{JINJA_STATEMENT_BEGIN};\n{e.name}\n{JINJA_END};",
                     MacroDef: lambda self, e: f"@DEF({self.sql(e.this)}, {self.sql(e.expression)})",
                     MacroFunc: _macro_func_sql,
                     MacroStrReplace: lambda self, e: f"@{self.sql(e.this)}",
@@ -828,7 +841,7 @@ def extend_sqlglot() -> None:
 
 
 def select_from_values(
-    values: t.List[PandasNamedTuple],
+    values: t.List[t.Tuple[t.Any, ...]],
     columns_to_types: t.Dict[str, exp.DataType],
     batch_size: int = 0,
     alias: str = "t",
@@ -858,7 +871,7 @@ def select_from_values(
 
 
 def select_from_values_for_batch_range(
-    values: t.List[PandasNamedTuple],
+    values: t.List[t.Tuple[t.Any, ...]],
     columns_to_types: t.Dict[str, exp.DataType],
     batch_start: int,
     batch_end: int,

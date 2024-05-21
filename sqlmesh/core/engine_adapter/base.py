@@ -55,7 +55,6 @@ if t.TYPE_CHECKING:
         QueryOrDF,
     )
     from sqlmesh.core.node import IntervalUnit
-    from sqlmesh.utils.pandas import PandasNamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -110,26 +109,28 @@ class EngineAdapter:
         default_catalog: t.Optional[str] = None,
         execute_log_level: int = logging.DEBUG,
         register_comments: bool = True,
+        pre_ping: bool = False,
         **kwargs: t.Any,
     ):
         self.dialect = dialect.lower() or self.DIALECT
         self._connection_pool = create_connection_pool(
             connection_factory, multithreaded, cursor_kwargs=cursor_kwargs, cursor_init=cursor_init
         )
-        self.sql_gen_kwargs = sql_gen_kwargs or {}
+        self._sql_gen_kwargs = sql_gen_kwargs or {}
         self._default_catalog = default_catalog
         self._execute_log_level = execute_log_level
         self._extra_config = kwargs
-        self.register_comments = register_comments
+        self._register_comments = register_comments
+        self._pre_ping = pre_ping
 
     def with_log_level(self, level: int) -> EngineAdapter:
         adapter = self.__class__(
             lambda: None,
             dialect=self.dialect,
-            sql_gen_kwargs=self.sql_gen_kwargs,
+            sql_gen_kwargs=self._sql_gen_kwargs,
             default_catalog=self._default_catalog,
             execute_log_level=level,
-            register_comments=self.register_comments,
+            register_comments=self._register_comments,
             **self._extra_config,
         )
 
@@ -147,7 +148,7 @@ class EngineAdapter:
 
     @property
     def comments_enabled(self) -> bool:
-        return self.register_comments and self.COMMENT_CREATION_TABLE.is_supported
+        return self._register_comments and self.COMMENT_CREATION_TABLE.is_supported
 
     @classmethod
     def is_pandas_df(cls, value: t.Any) -> bool:
@@ -804,6 +805,7 @@ class EngineAdapter:
         materialized: bool = False,
         table_description: t.Optional[str] = None,
         column_descriptions: t.Optional[t.Dict[str, str]] = None,
+        view_properties: t.Optional[t.Dict[str, exp.Expression]] = None,
         **create_kwargs: t.Any,
     ) -> None:
         """Create a view with a query or dataframe.
@@ -819,6 +821,7 @@ class EngineAdapter:
             materialized: Whether to create a a materialized view. Only used for engines that support this feature.
             table_description: Optional table description from MODEL DDL.
             column_descriptions: Optional column descriptions from model query.
+            view_properties: Optional view properties to add to the view.
             create_kwargs: Additional kwargs to pass into the Create expression
         """
         if self.is_pandas_df(query_or_df):
@@ -856,7 +859,7 @@ class EngineAdapter:
                 schema = schema.this
 
         create_view_properties = self._build_view_properties_exp(
-            create_kwargs.pop("table_properties", None),
+            view_properties,
             (
                 table_description
                 if self.COMMENT_CREATION_VIEW.supports_schema_def and self.comments_enabled
@@ -1059,7 +1062,7 @@ class EngineAdapter:
 
     def _values_to_sql(
         self,
-        values: t.List[PandasNamedTuple],
+        values: t.List[t.Tuple[t.Any, ...]],
         columns_to_types: t.Dict[str, exp.DataType],
         batch_start: int,
         batch_end: int,
@@ -1105,7 +1108,6 @@ class EngineAdapter:
                         insert_exp = exp.insert(
                             query,
                             table,
-                            # Change once Databricks supports REPLACE WHERE with columns
                             columns=(
                                 list(columns_to_types)
                                 if not insert_overwrite_strategy.is_replace_where
@@ -1114,7 +1116,7 @@ class EngineAdapter:
                             overwrite=insert_overwrite_strategy.is_insert_overwrite,
                         )
                         if insert_overwrite_strategy.is_replace_where:
-                            insert_exp.set("where", where)
+                            insert_exp.set("where", where or exp.true())
                         self.execute(insert_exp)
 
     def update_table(
@@ -1741,6 +1743,15 @@ class EngineAdapter:
         ):
             yield
             return
+
+        if self._pre_ping:
+            try:
+                logger.debug("Pinging the database to check the connection")
+                self._ping()
+            except Exception:
+                logger.info("Connection to the database was lost. Reconnecting...")
+                self._connection_pool.close()
+
         self._connection_pool.begin()
         try:
             yield
@@ -1847,13 +1858,15 @@ class EngineAdapter:
             finally:
                 self.drop_table(table)
 
-    def _table_properties_to_expressions(
-        self, table_properties: t.Optional[t.Dict[str, exp.Expression]] = None
+    def _table_or_view_properties_to_expressions(
+        self, table_or_view_properties: t.Optional[t.Dict[str, exp.Expression]] = None
     ) -> t.List[exp.Property]:
-        if not table_properties:
+        """Converts model properties (either physical or virtual) to a list of property expressions."""
+        if not table_or_view_properties:
             return []
         return [
-            exp.Property(this=key, value=value.copy()) for key, value in table_properties.items()
+            exp.Property(this=key, value=value.copy())
+            for key, value in table_or_view_properties.items()
         ]
 
     def _build_table_properties_exp(
@@ -1883,7 +1896,7 @@ class EngineAdapter:
 
     def _build_view_properties_exp(
         self,
-        table_properties: t.Optional[t.Dict[str, exp.Expression]] = None,
+        view_properties: t.Optional[t.Dict[str, exp.Expression]] = None,
         table_description: t.Optional[str] = None,
     ) -> t.Optional[exp.Properties]:
         """Creates a SQLGlot table properties expression for view"""
@@ -1919,7 +1932,7 @@ class EngineAdapter:
             "dialect": self.dialect,
             "pretty": False,
             "comments": False,
-            **self.sql_gen_kwargs,
+            **self._sql_gen_kwargs,
             **kwargs,
         }
 
@@ -2035,6 +2048,12 @@ class EngineAdapter:
         new_table_name: TableName,
     ) -> None:
         self.execute(exp.rename_table(old_table_name, new_table_name))
+
+    def _ping(self) -> None:
+        try:
+            self._execute(exp.select("1").sql(dialect=self.dialect))
+        finally:
+            self._connection_pool.close_cursor()
 
     @classmethod
     def _select_columns(cls, columns: t.Iterable[str]) -> exp.Select:

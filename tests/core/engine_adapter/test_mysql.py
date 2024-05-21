@@ -58,7 +58,20 @@ def test_comments(make_mocked_engine_adapter: t.Callable, mocker: MockerFixture)
         f"CREATE TABLE IF NOT EXISTS `test_table` (`a` INT COMMENT '{truncated_column_comment}', `b` INT) COMMENT='{truncated_table_comment}'",
         f"CREATE TABLE IF NOT EXISTS `test_table` COMMENT='{truncated_table_comment}' AS SELECT `a`, `b` FROM `source_table`",
         f"ALTER TABLE `test_table` MODIFY `a` INT COMMENT '{truncated_column_comment}'",
-        f"CREATE OR REPLACE VIEW `test_view` AS SELECT `a`, `b` FROM `source_table`",
+        "CREATE OR REPLACE VIEW `test_view` AS SELECT `a`, `b` FROM `source_table`",
         f"ALTER TABLE `test_table` COMMENT = '{truncated_table_comment}'",
         f"ALTER TABLE `test_table` MODIFY `a` INT COMMENT '{truncated_column_comment}'",
     ]
+
+
+def test_pre_ping(mocker: MockerFixture, make_mocked_engine_adapter: t.Callable):
+    adapter = make_mocked_engine_adapter(MySQLEngineAdapter)
+    adapter._pre_ping = True
+
+    adapter.execute("SELECT 'test'")
+
+    assert to_sql_calls(adapter) == [
+        "SELECT 'test'",
+    ]
+
+    adapter._connection_pool.get().ping.assert_called_once_with(reconnect=False)

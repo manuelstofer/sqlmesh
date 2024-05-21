@@ -656,14 +656,11 @@ class Snapshot(PydanticModel, SnapshotInfoMixin):
         else:
             self.intervals = merged_intervals
 
-    def remove_interval(
-        self, interval: Interval, execution_time: t.Optional[TimeLike] = None
-    ) -> None:
+    def remove_interval(self, interval: Interval) -> None:
         """Remove an interval from the snapshot.
 
         Args:
             interval: The interval to remove.
-            execution_time: The date/time time reference to use for execution time. Defaults to now.
         """
         self.intervals = remove_interval(self.intervals, *interval)
         self.dev_intervals = remove_interval(self.dev_intervals, *interval)
@@ -740,8 +737,7 @@ class Snapshot(PydanticModel, SnapshotInfoMixin):
         if self.identifier == other.identifier or (
             # Indirect Non-Breaking snapshots share the dev table with its previous version.
             # The same applies to migrated snapshots.
-            (self.is_indirect_non_breaking or self.migrated)
-            and other.snapshot_id in previous_ids
+            (self.is_indirect_non_breaking or self.migrated) and other.snapshot_id in previous_ids
         ):
             for start, end in other.dev_intervals:
                 self.add_interval(start, end, is_dev=True)
@@ -1211,7 +1207,7 @@ class DeployabilityIndex(PydanticModel, frozen=True):
             ):
                 return
 
-            if deployable:
+            if deployable and node in snapshots:
                 snapshot = snapshots[node]
                 # Capture uncategorized snapshot which represents a forward-only model.
                 is_forward_only_model = (
@@ -1505,7 +1501,7 @@ def missing_intervals(
             snapshot_start_date, snapshot_end_date = (to_datetime(i) for i in interval)
             snapshot = snapshot.copy()
             snapshot.intervals = snapshot.intervals.copy()
-            snapshot.remove_interval(interval, execution_time)
+            snapshot.remove_interval(interval)
 
         missing_interval_end_date = snapshot_end_date
         node_end_date = snapshot.node.end

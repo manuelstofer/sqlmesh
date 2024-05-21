@@ -215,7 +215,6 @@ def test_snapshots_exists(state_sync: EngineAdapterStateSync, snapshots: t.List[
 
 @pytest.fixture
 def get_snapshot_intervals(state_sync) -> t.Callable[[Snapshot], t.Optional[SnapshotIntervals]]:
-
     def _get_snapshot_intervals(snapshot: Snapshot) -> t.Optional[SnapshotIntervals]:
         intervals = state_sync._get_snapshot_intervals([snapshot])[-1]
         return intervals[0] if intervals else None
@@ -1855,7 +1854,7 @@ def test_cache(state_sync, make_snapshot, mocker):
     now_timestamp.return_value = to_timestamp("2023-01-01 00:00:05")
     with patch.object(state_sync, "get_snapshots") as mock:
         assert cache.get_snapshots([snapshot.snapshot_id])
-        mock.not_called()
+        mock.assert_not_called()
 
     # no cache hit
     now_timestamp.return_value = to_timestamp("2023-01-01 00:00:11")
@@ -2194,6 +2193,8 @@ def test_snapshot_batching(state_sync, mocker, make_snapshot):
                 ).json(),
                 "a",
                 "1",
+                "1",
+                None,
             ],
             [
                 make_snapshot(
@@ -2201,6 +2202,8 @@ def test_snapshot_batching(state_sync, mocker, make_snapshot):
                 ).json(),
                 "a",
                 "2",
+                "2",
+                None,
             ],
         ],
         [
@@ -2210,6 +2213,8 @@ def test_snapshot_batching(state_sync, mocker, make_snapshot):
                 ).json(),
                 "a",
                 "3",
+                "3",
+                None,
             ],
         ],
     ]

@@ -46,7 +46,7 @@ setup(
         "requests",
         "rich[jupyter]",
         "ruamel.yaml",
-        "sqlglot[rs]~=23.13.0",
+        "sqlglot[rs]~=23.17.0",
     ],
     extras_require={
         "bigquery": [
@@ -58,40 +58,28 @@ setup(
             "databricks-cli",
         ],
         "dev": [
-            f"apache-airflow=={os.environ.get('AIRFLOW_VERSION', '2.4.3')}",
-            "autoflake==1.7.7",
+            f"apache-airflow=={os.environ.get('AIRFLOW_VERSION', '2.9.1')}",
             "agate==1.7.1",
             "beautifulsoup4",
-            "black==24.1.1",
-            "cryptography~=41.0.7",
+            "ruff~=0.4.0",
+            "cryptography~=42.0.4",
             "dbt-core",
             "dbt-duckdb>=1.7.1",
             "Faker",
             "google-auth",
             "google-cloud-bigquery",
             "google-cloud-bigquery-storage",
-            "isort==5.10.1",
-            "mypy~=1.8.0",
-            # Pendulum 3.0.0 contains a breaking change for Airflow.
-            # To test if this is fixed with future versions, check if this line works:
-            # https://github.com/apache/airflow/blob/main/airflow/settings.py#L59
-            # `TIMEZONE = pendulum.tz.timezone("UTC")`
-            "pendulum<3.0.0",
+            "mypy~=1.10.0",
             "pre-commit",
             "pandas-stubs",
             "psycopg2-binary",
-            "pyarrow>=10.0.1,<10.1.0",
-            # All Airflow releases require flast-appbuilder==4.3.10 and
-            # 4.3.10 requires email-validator==1.3.1
-            # https://github.com/apache/airflow/blob/main/pyproject.toml#L685
-            # https://github.com/dpgaspar/Flask-AppBuilder/blob/master/requirements.txt#L25
             "pydantic<2.6.0",
             "PyGithub",
             "pytest",
             "pytest-asyncio<0.23.0",
             "pytest-mock",
             "pytest-xdist",
-            "pyspark==3.4.0",
+            "pyspark~=3.5.0",
             "pytz",
             "snowflake-connector-python[pandas,secure-local-storage]>=3.0.2",
             "sqlalchemy-stubs",
@@ -124,9 +112,6 @@ setup(
             "langchain",
             "openai",
         ],
-        "motherduck": [
-            "duckdb<0.10.0",
-        ],
         "mssql": [
             "pymssql",
         ],
@@ -146,11 +131,9 @@ setup(
             "slack_sdk",
         ],
         "snowflake": [
-            # Issue with Snowflake connector and cryptography 42+
-            # Check here if they have added support: https://github.com/dbt-labs/dbt-snowflake/blob/main/dev-requirements.txt#L12
-            "cryptography~=41.0.7",
+            # https://github.com/dbt-labs/dbt-snowflake/blob/main/dev-requirements.txt#L12
+            "cryptography~=42.0.4",
             "snowflake-connector-python[pandas,secure-local-storage]",
-            "pyarrow>=10.0.1,<10.1.0",
         ],
         "trino": [
             "trino",
@@ -158,9 +141,9 @@ setup(
         "web": [
             "fastapi==0.110.2",
             "watchfiles>=0.19.0",
-            "pyarrow>=10.0.1",
             "uvicorn[standard]==0.22.0",
             "sse-starlette>=0.2.2",
+            "pyarrow",
         ],
     },
     classifiers=[

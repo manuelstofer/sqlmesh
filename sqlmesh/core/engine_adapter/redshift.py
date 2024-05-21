@@ -174,6 +174,7 @@ class RedshiftEngineAdapter(
         materialized: bool = False,
         table_description: t.Optional[str] = None,
         column_descriptions: t.Optional[t.Dict[str, str]] = None,
+        view_properties: t.Optional[t.Dict[str, exp.Expression]] = None,
         **create_kwargs: t.Any,
     ) -> None:
         """
@@ -190,6 +191,7 @@ class RedshiftEngineAdapter(
             table_description=table_description,
             column_descriptions=column_descriptions,
             no_schema_binding=create_kwargs.pop("no_schema_binding", True),
+            view_properties=view_properties,
             **create_kwargs,
         )
 
@@ -326,7 +328,10 @@ class RedshiftEngineAdapter(
         df = self.fetchdf(query)
         return [
             DataObject(
-                catalog=catalog, schema=row.schema_name, name=row.name, type=DataObjectType.from_str(row.type)  # type: ignore
+                catalog=catalog,
+                schema=row.schema_name,
+                name=row.name,
+                type=DataObjectType.from_str(row.type),  # type: ignore
             )
             for row in df.itertuples()
         ]

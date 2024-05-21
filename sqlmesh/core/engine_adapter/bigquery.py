@@ -529,7 +529,7 @@ class BigQueryEngineAdapter(InsertOverwriteWithMergeMixin):
                 ),
             )
 
-        properties.extend(self._table_properties_to_expressions(table_properties))
+        properties.extend(self._table_or_view_properties_to_expressions(table_properties))
 
         if properties:
             return exp.Properties(expressions=properties)
@@ -555,7 +555,7 @@ class BigQueryEngineAdapter(InsertOverwriteWithMergeMixin):
 
     def _build_view_properties_exp(
         self,
-        table_properties: t.Optional[t.Dict[str, exp.Expression]] = None,
+        view_properties: t.Optional[t.Dict[str, exp.Expression]] = None,
         table_description: t.Optional[str] = None,
     ) -> t.Optional[exp.Properties]:
         """Creates a SQLGlot table properties expression for view"""
@@ -568,7 +568,7 @@ class BigQueryEngineAdapter(InsertOverwriteWithMergeMixin):
                 ),
             )
 
-        properties.extend(self._table_properties_to_expressions(table_properties))
+        properties.extend(self._table_or_view_properties_to_expressions(view_properties))
 
         if properties:
             return exp.Properties(expressions=properties)
@@ -669,7 +669,6 @@ class BigQueryEngineAdapter(InsertOverwriteWithMergeMixin):
         # resort to using SQL instead.
         schema = to_schema(schema_name)
         catalog = schema.catalog or self.get_current_catalog()
-        schema_sql = schema.sql(dialect=self.dialect)
         query = exp.select(
             exp.column("table_catalog").as_("catalog"),
             exp.column("table_name").as_("name"),

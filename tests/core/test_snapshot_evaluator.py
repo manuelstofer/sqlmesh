@@ -258,6 +258,7 @@ def test_promote(mocker: MockerFixture, adapter_mock, make_snapshot):
         ),
         table_description=None,
         column_descriptions=None,
+        view_properties={},
     )
 
 
@@ -307,6 +308,7 @@ def test_promote_default_catalog(adapter_mock, make_snapshot):
         ),
         table_description=None,
         column_descriptions=None,
+        view_properties={},
     )
 
 
@@ -351,6 +353,7 @@ def test_promote_forward_only(mocker: MockerFixture, adapter_mock, make_snapshot
                 ),
                 table_description=None,
                 column_descriptions=None,
+                view_properties={},
             ),
             call(
                 "test_schema__test_env.test_model",
@@ -359,6 +362,7 @@ def test_promote_forward_only(mocker: MockerFixture, adapter_mock, make_snapshot
                 ),
                 table_description=None,
                 column_descriptions=None,
+                view_properties={},
             ),
         ]
     )
@@ -459,7 +463,7 @@ def test_evaluate_materialized_view(
             model.render_query(),
             model.columns_to_types,
             materialized=True,
-            table_properties={},
+            view_properties={},
             table_description=None,
             column_descriptions={},
         )
@@ -501,7 +505,7 @@ def test_evaluate_materialized_view_with_execution_time_macro(
         model.render_query(execution_time="2020-01-02"),
         model.columns_to_types,
         materialized=True,
-        table_properties={},
+        view_properties={},
         table_description=None,
         column_descriptions={},
     )
@@ -653,7 +657,7 @@ def test_create_only_dev_table_exists(mocker: MockerFixture, adapter_mock, make_
 
     common_kwargs = dict(
         materialized=False,
-        table_properties={},
+        view_properties={},
         table_description=None,
     )
     rendered_query = model.render_query()
@@ -703,7 +707,7 @@ def test_create_materialized_view(mocker: MockerFixture, adapter_mock, make_snap
 
     common_kwargs = dict(
         materialized=True,
-        table_properties={},
+        view_properties={},
         table_description=None,
     )
 
@@ -733,7 +737,7 @@ def test_create_view_with_properties(mocker: MockerFixture, adapter_mock, make_s
                 kind VIEW (
                     materialized true
                 ),
-                table_properties (
+                physical_properties (
                     "key" = 'value'
                 )
             );
@@ -750,7 +754,7 @@ def test_create_view_with_properties(mocker: MockerFixture, adapter_mock, make_s
 
     common_kwargs = dict(
         materialized=True,
-        table_properties={
+        view_properties={
             "key": exp.convert("value"),
         },
         table_description=None,
@@ -795,6 +799,7 @@ def test_promote_model_info(mocker: MockerFixture, make_snapshot):
         parse_one(f"SELECT * FROM physical_schema.test_schema__test_model__{snapshot.version}"),
         table_description=None,
         column_descriptions=None,
+        view_properties={},
     )
 
 

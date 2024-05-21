@@ -11,11 +11,11 @@ import agate
 import jinja2
 from dbt import version
 from dbt.adapters.base import BaseRelation, Column
-from dbt.contracts.relation import Policy
 from ruamel.yaml import YAMLError
 
 from sqlmesh.core.engine_adapter import EngineAdapter
 from sqlmesh.dbt.adapter import BaseAdapter, ParsetimeAdapter, RuntimeAdapter
+from sqlmesh.dbt.relation import Policy
 from sqlmesh.dbt.target import TARGET_TYPE_TO_CONFIG_CLASS
 from sqlmesh.dbt.util import DBT_VERSION
 from sqlmesh.utils import AttributeDict, yaml
@@ -92,15 +92,15 @@ class SQLExecution:
         self._results: t.Dict[str, AttributeDict] = {}
 
     def store_result(self, name: str, response: t.Any, agate_table: t.Optional[agate.Table]) -> str:
-        from dbt.clients import agate_helper
+        from sqlmesh.dbt.util import empty_table, as_matrix
 
         if agate_table is None:
-            agate_table = agate_helper.empty_table()
+            agate_table = empty_table()
 
         self._results[name] = AttributeDict(
             {
                 "response": response,
-                "data": agate_helper.as_matrix(agate_table),
+                "data": as_matrix(agate_table),
                 "table": agate_table,
             }
         )

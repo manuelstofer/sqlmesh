@@ -52,7 +52,9 @@ import pandas as pd
 from sqlglot import exp
 from sqlglot.lineage import GraphHTML
 
+from sqlmesh.core import analytics
 from sqlmesh.core import constants as c
+from sqlmesh.core.analytics import python_api_analytics
 from sqlmesh.core.audit import Audit, StandaloneAudit
 from sqlmesh.core.config import CategorizerConfig, Config, load_configs
 from sqlmesh.core.config.loader import C
@@ -314,6 +316,9 @@ class GenericContext(BaseContext, t.Generic[C]):
 
         self.path, self.config = t.cast(t.Tuple[Path, C], next(iter(self.configs.items())))
 
+        if self.config.disable_anonymized_analytics:
+            analytics.disable_analytics()
+
         self.gateway = gateway
         self._scheduler = self.config.get_scheduler(self.gateway)
         self.environment_ttl = self.config.environment_ttl
@@ -324,11 +329,8 @@ class GenericContext(BaseContext, t.Generic[C]):
         self.concurrent_tasks = concurrent_tasks or self._connection_config.concurrent_tasks
         self._engine_adapter = engine_adapter or self._connection_config.create_engine_adapter()
 
-        test_connection_config = self.config.get_test_connection(
+        self._test_connection_config = self.config.get_test_connection(
             self.gateway, self.default_catalog, default_catalog_dialect=self.engine_adapter.DIALECT
-        )
-        self._test_engine_adapter = test_connection_config.create_engine_adapter(
-            register_comments_override=False
         )
 
         self._snapshot_evaluator: t.Optional[SnapshotEvaluator] = None
@@ -385,6 +387,7 @@ class GenericContext(BaseContext, t.Generic[C]):
             default_catalog=self.default_catalog,
         )
 
+    @python_api_analytics
     def upsert_model(self, model: t.Union[str, Model], **kwargs: t.Any) -> Model:
         """Update or insert a model.
 
@@ -470,6 +473,7 @@ class GenericContext(BaseContext, t.Generic[C]):
 
     def load(self, update_schemas: bool = True) -> GenericContext[C]:
         """Load all files in the context's path."""
+        load_start_ts = time.perf_counter()
         with sys_path(*self.configs):
             gc.disable()
             project = self._loader.load(self, update_schemas)
@@ -493,8 +497,23 @@ class GenericContext(BaseContext, t.Generic[C]):
                     f"Models and Standalone audits cannot have the same name: {duplicates}"
                 )
 
+        analytics.collector.on_project_loaded(
+            project_type=(
+                c.DBT if type(self._loader).__name__.lower().startswith(c.DBT) else c.NATIVE
+            ),
+            models_count=len(self._models),
+            audits_count=len(self._audits),
+            standalone_audits_count=len(self._standalone_audits),
+            macros_count=len(self._macros),
+            jinja_macros_count=len(self._jinja_macros.root_macros),
+            load_time_sec=time.perf_counter() - load_start_ts,
+            state_sync_fingerprint=self._scheduler.state_sync_fingerprint(self),
+            project_name=self.config.project,
+        )
+
         return self
 
+    @python_api_analytics
     def run(
         self,
         environment: t.Optional[str] = None,
@@ -678,6 +697,7 @@ class GenericContext(BaseContext, t.Generic[C]):
             self._default_catalog = self._scheduler.get_default_catalog(self)
         return self._default_catalog
 
+    @python_api_analytics
     def render(
         self,
         model_or_snapshot: ModelOrSnapshot,
@@ -738,6 +758,7 @@ class GenericContext(BaseContext, t.Generic[C]):
             **kwargs,
         )
 
+    @python_api_analytics
     def evaluate(
         self,
         model_or_snapshot: ModelOrSnapshot,
@@ -774,6 +795,7 @@ class GenericContext(BaseContext, t.Generic[C]):
 
         return df
 
+    @python_api_analytics
     def format(
         self,
         transpile: t.Optional[str] = None,
@@ -809,6 +831,7 @@ class GenericContext(BaseContext, t.Generic[C]):
                     file.write("\n")
                 file.truncate()
 
+    @python_api_analytics
     def plan(
         self,
         environment: t.Optional[str] = None,
@@ -909,6 +932,7 @@ class GenericContext(BaseContext, t.Generic[C]):
 
         return plan_builder.build()
 
+    @python_api_analytics
     def plan_builder(
         self,
         environment: t.Optional[str] = None,
@@ -1007,10 +1031,6 @@ class GenericContext(BaseContext, t.Generic[C]):
         expanded_restate_models = None
         if restate_models is not None:
             expanded_restate_models = model_selector.expand_model_selections(restate_models)
-            if not expanded_restate_models:
-                self.console.log_error(
-                    f"Provided restated models do not match any models. No models will be included in plan. Provided: {', '.join(restate_models)}"
-                )
 
         snapshots = self._snapshots(models_override)
         context_diff = self._context_diff(
@@ -1086,6 +1106,7 @@ class GenericContext(BaseContext, t.Generic[C]):
             ),
             end_bounded=not run,
             ensure_finalized_snapshots=self.config.plan.use_finalized_state,
+            console=self.console,
         )
 
     def apply(
@@ -1132,6 +1153,7 @@ class GenericContext(BaseContext, t.Generic[C]):
             plan_id=plan.plan_id,
         )
 
+    @python_api_analytics
     def invalidate_environment(self, name: str, sync: bool = False) -> None:
         """Invalidates the target environment by setting its expiration timestamp to now.
 
@@ -1147,6 +1169,7 @@ class GenericContext(BaseContext, t.Generic[C]):
         else:
             self.console.log_success(f"Environment '{name}' has been invalidated.")
 
+    @python_api_analytics
     def diff(self, environment: t.Optional[str] = None, detailed: bool = False) -> bool:
         """Show a diff of the current context with a given environment.
 
@@ -1172,6 +1195,7 @@ class GenericContext(BaseContext, t.Generic[C]):
         )
         return context_diff.has_changes
 
+    @python_api_analytics
     def table_diff(
         self,
         source: str,
@@ -1245,6 +1269,7 @@ class GenericContext(BaseContext, t.Generic[C]):
             self.console.show_row_diff(table_diff.row_diff(), show_sample=show_sample)
         return table_diff
 
+    @python_api_analytics
     def get_dag(
         self, select_models: t.Optional[t.Collection[str]] = None, **options: t.Any
     ) -> GraphHTML:
@@ -1293,6 +1318,7 @@ class GenericContext(BaseContext, t.Generic[C]):
             },
         )
 
+    @python_api_analytics
     def render_dag(self, path: str, select_models: t.Optional[t.Collection[str]] = None) -> None:
         """Render the dag as HTML and save it to a file.
 
@@ -1312,6 +1338,7 @@ class GenericContext(BaseContext, t.Generic[C]):
         with open(path, "w", encoding="utf-8") as file:
             file.write(str(self.get_dag(select_models)))
 
+    @python_api_analytics
     def create_test(
         self,
         model: str,
@@ -1343,20 +1370,27 @@ class GenericContext(BaseContext, t.Generic[C]):
             for dep, query in input_queries.items()
         }
 
-        generate_test(
-            model=self.get_model(model, raise_if_missing=True),
-            input_queries=input_queries,
-            models=self._models,
-            engine_adapter=self._engine_adapter,
-            test_engine_adapter=self._test_engine_adapter,
-            project_path=self.path,
-            overwrite=overwrite,
-            variables=variables,
-            path=path,
-            name=name,
-            include_ctes=include_ctes,
-        )
+        try:
+            test_adapter = self._test_connection_config.create_engine_adapter(
+                register_comments_override=False
+            )
+            generate_test(
+                model=self.get_model(model, raise_if_missing=True),
+                input_queries=input_queries,
+                models=self._models,
+                engine_adapter=self._engine_adapter,
+                test_engine_adapter=test_adapter,
+                project_path=self.path,
+                overwrite=overwrite,
+                variables=variables,
+                path=path,
+                name=name,
+                include_ctes=include_ctes,
+            )
+        finally:
+            test_adapter.close()
 
+    @python_api_analytics
     def test(
         self,
         match_patterns: t.Optional[t.List[str]] = None,
@@ -1372,45 +1406,48 @@ class GenericContext(BaseContext, t.Generic[C]):
         else:
             verbosity = 1
 
-        try:
-            if tests:
-                result = run_model_tests(
-                    tests=tests,
-                    models=self._models,
-                    engine_adapter=self._test_engine_adapter,
-                    dialect=self.default_dialect,
-                    verbosity=verbosity,
-                    patterns=match_patterns,
-                    preserve_fixtures=preserve_fixtures,
-                    default_catalog=self.default_catalog,
-                )
-            else:
-                test_meta = []
+        if tests:
+            result = run_model_tests(
+                tests=tests,
+                models=self._models,
+                config=self.config,
+                gateway=self.gateway,
+                dialect=self.default_dialect,
+                verbosity=verbosity,
+                patterns=match_patterns,
+                preserve_fixtures=preserve_fixtures,
+                stream=stream,
+                default_catalog=self.default_catalog,
+                default_catalog_dialect=self.engine_adapter.DIALECT,
+            )
+        else:
+            test_meta = []
 
-                for path, config in self.configs.items():
-                    test_meta.extend(
-                        get_all_model_tests(
-                            path / c.TESTS,
-                            patterns=match_patterns,
-                            ignore_patterns=config.ignore_patterns,
-                        )
+            for path, config in self.configs.items():
+                test_meta.extend(
+                    get_all_model_tests(
+                        path / c.TESTS,
+                        patterns=match_patterns,
+                        ignore_patterns=config.ignore_patterns,
                     )
-
-                result = run_tests(
-                    test_meta,
-                    models=self._models,
-                    engine_adapter=self._test_engine_adapter,
-                    dialect=self.default_dialect,
-                    verbosity=verbosity,
-                    preserve_fixtures=preserve_fixtures,
-                    stream=stream,
-                    default_catalog=self.default_catalog,
                 )
-        finally:
-            self._test_engine_adapter.close()
+
+            result = run_tests(
+                model_test_metadata=test_meta,
+                models=self._models,
+                config=self.config,
+                gateway=self.gateway,
+                dialect=self.default_dialect,
+                verbosity=verbosity,
+                preserve_fixtures=preserve_fixtures,
+                stream=stream,
+                default_catalog=self.default_catalog,
+                default_catalog_dialect=self.engine_adapter.DIALECT,
+            )
 
         return result
 
+    @python_api_analytics
     def audit(
         self,
         start: TimeLike,
@@ -1477,6 +1514,7 @@ class GenericContext(BaseContext, t.Generic[C]):
 
         self.console.log_status_update("Done.")
 
+    @python_api_analytics
     def rewrite(self, sql: str, dialect: str = "") -> exp.Expression:
         """Rewrite a sql expression with semantic references into an executable query.
 
@@ -1496,6 +1534,7 @@ class GenericContext(BaseContext, t.Generic[C]):
             dialect=dialect or self.default_dialect,
         )
 
+    @python_api_analytics
     def migrate(self) -> None:
         """Migrates SQLMesh to the current running version.
 
@@ -1514,6 +1553,7 @@ class GenericContext(BaseContext, t.Generic[C]):
             raise e
         self.notification_target_manager.notify(NotificationEvent.MIGRATION_END)
 
+    @python_api_analytics
     def rollback(self) -> None:
         """Rolls back SQLMesh to the previous migration.
 
@@ -1521,6 +1561,7 @@ class GenericContext(BaseContext, t.Generic[C]):
         """
         self._new_state_sync().rollback()
 
+    @python_api_analytics
     def create_external_models(self) -> None:
         """Create a schema file with all external models.
 
@@ -1547,6 +1588,7 @@ class GenericContext(BaseContext, t.Generic[C]):
                 max_workers=self.concurrent_tasks,
             )
 
+    @python_api_analytics
     def print_info(self) -> None:
         """Prints information about connections, models, macros, etc. to the console."""
         self.console.log_status_update(f"Models: {len(self.models)}")
@@ -1557,8 +1599,6 @@ class GenericContext(BaseContext, t.Generic[C]):
         state_connection = self.config.get_state_connection(self.gateway)
         if state_connection:
             self._try_connection("state backend", state_connection.create_engine_adapter())
-
-        self._try_connection("test", self._test_engine_adapter)
 
     def close(self) -> None:
         """Releases all resources allocated by this context."""
@@ -1639,6 +1679,7 @@ class GenericContext(BaseContext, t.Generic[C]):
     def _apply(self, plan: Plan, circuit_breaker: t.Optional[t.Callable[[], bool]]) -> None:
         self._scheduler.create_plan_evaluator(self).evaluate(plan, circuit_breaker=circuit_breaker)
 
+    @python_api_analytics
     def table_name(self, model_name: str, dev: bool) -> str:
         """Returns the name of the pysical table for the given model name.
 
@@ -1671,11 +1712,11 @@ class GenericContext(BaseContext, t.Generic[C]):
     def _run_plan_tests(
         self, skip_tests: bool = False
     ) -> t.Tuple[t.Optional[unittest.result.TestResult], t.Optional[str]]:
-        if self._test_engine_adapter and not skip_tests:
+        if not skip_tests:
             result, test_output = self._run_tests()
             if result.testsRun > 0:
                 self.console.log_test_results(
-                    result, test_output, self._test_engine_adapter.dialect
+                    result, test_output, self._test_connection_config._engine_adapter.DIALECT
                 )
             if not result.wasSuccessful():
                 raise PlanError(

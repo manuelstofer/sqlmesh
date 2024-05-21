@@ -121,12 +121,12 @@ class SparkEngineAdapter(GetCurrentCatalogFromFunctionMixin, HiveMetastoreTableP
         def spark_complex_to_sqlglot_complex(
             complex_type: t.Union[
                 spark_types.StructType, spark_types.ArrayType, spark_types.MapType
-            ]
+            ],
         ) -> exp.DataType:
             def get_fields(
                 complex_type: t.Union[
                     spark_types.StructType, spark_types.ArrayType, spark_types.MapType
-                ]
+                ],
             ) -> t.Sequence[spark_types.DataType]:
                 if isinstance(complex_type, spark_types.StructType):
                     return complex_type.fields
@@ -370,6 +370,7 @@ class SparkEngineAdapter(GetCurrentCatalogFromFunctionMixin, HiveMetastoreTableP
         materialized: bool = False,
         table_description: t.Optional[str] = None,
         column_descriptions: t.Optional[t.Dict[str, str]] = None,
+        view_properties: t.Optional[t.Dict[str, exp.Expression]] = None,
         **create_kwargs: t.Any,
     ) -> None:
         """Create a view with a query or dataframe.
@@ -398,6 +399,7 @@ class SparkEngineAdapter(GetCurrentCatalogFromFunctionMixin, HiveMetastoreTableP
             materialized,
             table_description,
             column_descriptions,
+            view_properties=view_properties,
             **create_kwargs,
         )
 

@@ -125,9 +125,9 @@ class ManifestHelper:
                 **_config(source),
                 **source.to_dict(),
             )
-            self._sources_per_package[source.package_name][
-                source_config.config_name
-            ] = source_config
+            self._sources_per_package[source.package_name][source_config.config_name] = (
+                source_config
+            )
 
     def _load_macros(self) -> None:
         for macro in self._manifest.macros.values():
@@ -256,6 +256,7 @@ class ManifestHelper:
             profiles_dir=str(self.profiles_path),
             target=self.target.name,
             macro_debugging=False,
+            REQUIRE_RESOURCE_NAMES_WITHOUT_SPACES=True,
         )
         flags.set_from_args(args, None)
 
@@ -271,7 +272,15 @@ class ManifestHelper:
 
         self._project_name = project.project_name
 
-        register_adapter(runtime_config)
+        if DBT_VERSION >= (1, 8):
+            from dbt.mp_context import get_mp_context  # type: ignore
+            from dbt_common.context import set_invocation_context  # type: ignore
+
+            register_adapter(runtime_config, get_mp_context())  # type: ignore
+            set_invocation_context({})
+        else:
+            register_adapter(runtime_config)  # type: ignore
+
         manifest = ManifestLoader.get_full_manifest(runtime_config)
         reset_adapters()
         return manifest
@@ -471,8 +480,8 @@ def _node_base_config(node: ManifestNode) -> t.Dict[str, t.Any]:
 
 
 def _convert_jinja_test_to_macro(test_jinja: str) -> str:
-    TEST_TAG_REGEX = "\s*{%\s*test\s+"
-    ENDTEST_REGEX = "{%\s*endtest\s*%}"
+    TEST_TAG_REGEX = r"\s*{%\s*test\s+"
+    ENDTEST_REGEX = r"{%\s*endtest\s*%}"
     match = re.match(TEST_TAG_REGEX, test_jinja)
     if not match:
         # already a macro

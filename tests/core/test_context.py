@@ -107,7 +107,7 @@ def test_render_sql_model(sushi_context, assert_exp_eq, copy_to_temp_path: t.Cal
             end=date(2021, 1, 1),
             expand=True,
         ),
-        f"""
+        """
         SELECT
           CAST("o"."waiter_id" AS INT) AS "waiter_id", /* Waiter id */
           CAST(SUM("oi"."quantity" * "i"."price") AS DOUBLE) AS "revenue", /* Revenue from orders taken by this waiter */
@@ -157,7 +157,7 @@ def test_render_sql_model(sushi_context, assert_exp_eq, copy_to_temp_path: t.Cal
     unpushed = Context(paths=copy_to_temp_path("examples/sushi"))
     assert_exp_eq(
         unpushed.render("sushi.waiter_revenue_by_day"),
-        f"""
+        """
         SELECT
           CAST("o"."waiter_id" AS INT) AS "waiter_id", /* Waiter id */
           CAST(SUM("oi"."quantity" * "i"."price") AS DOUBLE) AS "revenue", /* Revenue from orders taken by this waiter */
@@ -254,6 +254,36 @@ def test_evaluate_limit():
     assert context.evaluate("without_limit", "2020-01-01", "2020-01-02", "2020-01-02", 2).size == 2
 
 
+def test_plan_execution_time():
+    context = Context(config=Config())
+    context.upsert_model(
+        load_sql_based_model(
+            parse(
+                """
+                MODEL(
+                    name db.x, 
+                    start '2024-01-01',
+                    kind FULL
+                );
+
+                SELECT @execution_date AS execution_date
+                """
+            )
+        )
+    )
+
+    context.plan(
+        "dev",
+        execution_time="2024-01-02",
+        auto_apply=True,
+        no_prompts=True,
+    )
+    assert (
+        str(list(context.fetchdf("select * from db__dev.x")["execution_date"])[0])
+        == "2024-01-02 00:00:00"
+    )
+
+
 def test_clear_caches(tmp_path: pathlib.Path):
     models_dir = tmp_path / "models"
 
@@ -282,12 +312,12 @@ def test_ignore_files(mocker: MockerFixture, tmp_path: pathlib.Path):
     models_dir = pathlib.Path("models")
     macros_dir = pathlib.Path("macros")
 
-    ignore_model_file = create_temp_file(
+    create_temp_file(
         tmp_path,
         pathlib.Path(models_dir, "ignore", "ignore_model.sql"),
         "MODEL(name ignore.ignore_model); SELECT 1 AS cola",
     )
-    ignore_macro_file = create_temp_file(
+    create_temp_file(
         tmp_path,
         pathlib.Path(macros_dir, "macro_ignore.py"),
         """
@@ -298,7 +328,7 @@ def test():
     return "test"
 """,
     )
-    constant_ignore_model_file = create_temp_file(
+    create_temp_file(
         tmp_path,
         pathlib.Path(models_dir, ".ipynb_checkpoints", "ignore_model2.sql"),
         "MODEL(name ignore_model2); SELECT cola::bigint AS cola FROM db.other_table",

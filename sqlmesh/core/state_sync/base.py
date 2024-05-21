@@ -181,6 +181,10 @@ class StateReader(abc.ABC):
     def close(self) -> None:
         """Closes all open connections and releases all allocated resources."""
 
+    @abc.abstractmethod
+    def state_type(self) -> str:
+        """Returns the type of state sync."""
+
     def get_versions(self, validate: bool = True) -> Versions:
         """Get the current versions of the SQLMesh schema and libraries.
 
@@ -307,7 +311,6 @@ class StateSync(StateReader, abc.ABC):
     def remove_interval(
         self,
         snapshot_intervals: t.Sequence[t.Tuple[SnapshotInfoLike, Interval]],
-        execution_time: t.Optional[TimeLike] = None,
         remove_shared_versions: bool = False,
     ) -> None:
         """Remove an interval from a list of snapshots and sync it to the store.

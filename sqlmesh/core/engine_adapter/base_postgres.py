@@ -94,6 +94,7 @@ class BasePostgresEngineAdapter(EngineAdapter):
         materialized: bool = False,
         table_description: t.Optional[str] = None,
         column_descriptions: t.Optional[t.Dict[str, str]] = None,
+        view_properties: t.Optional[t.Dict[str, exp.Expression]] = None,
         **create_kwargs: t.Any,
     ) -> None:
         """
@@ -114,6 +115,7 @@ class BasePostgresEngineAdapter(EngineAdapter):
                 materialized=materialized,
                 table_description=table_description,
                 column_descriptions=column_descriptions,
+                view_properties=view_properties,
                 **create_kwargs,
             )
 
@@ -169,7 +171,10 @@ class BasePostgresEngineAdapter(EngineAdapter):
         df = self.fetchdf(query)
         return [
             DataObject(
-                catalog=catalog, schema=row.schema_name, name=row.name, type=DataObjectType.from_str(row.type)  # type: ignore
+                catalog=catalog,
+                schema=row.schema_name,
+                name=row.name,
+                type=DataObjectType.from_str(row.type),  # type: ignore
             )
             for row in df.itertuples()
         ]

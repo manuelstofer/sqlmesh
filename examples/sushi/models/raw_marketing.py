@@ -4,7 +4,6 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
-from helper import iter_dates  # type: ignore
 from sqlglot import exp
 
 from sqlmesh import ExecutionContext, model
@@ -34,8 +33,12 @@ def execute(
 ) -> pd.DataFrame:
     # Generate query with sqlglot dialect/quoting
     existing_table = context.table("sushi.raw_marketing")
+    engine_dialect = context.engine_adapter.dialect
+
     df_existing = context.fetchdf(
-        exp.select("customer_id", "status", "updated_at").from_(existing_table),
+        exp.select("customer_id", "status", "updated_at").from_(
+            existing_table, dialect=engine_dialect
+        ),
         quote_identifiers=True,
     )
 

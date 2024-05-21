@@ -225,7 +225,6 @@ class HttpStateSync(StateSync):
     def remove_interval(
         self,
         snapshot_intervals: t.Sequence[t.Tuple[SnapshotInfoLike, Interval]],
-        execution_time: t.Optional[TimeLike] = None,
         remove_shared_versions: bool = False,
     ) -> None:
         """Remove an interval from a list of snapshots and sync it to the store.
@@ -344,3 +343,7 @@ class HttpStateSync(StateSync):
 
     def close(self) -> None:
         """Closes all open connections and releases all allocated resources."""
+
+    def state_type(self) -> str:
+        """Returns the type of state sync."""
+        return "airflow_http"

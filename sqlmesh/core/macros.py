@@ -184,34 +184,38 @@ class MacroEvaluator:
             raise SQLMeshError(f"Macro '{name}' does not exist.")
 
         try:
+            # Bind the macro's actual parameters to its formal parameters
+            sig = inspect.signature(func)
+            bound = sig.bind(self, *args, **kwargs)
+            bound.apply_defaults()
+        except Exception as e:
+            print_exception(e, self.python_env)
+            raise MacroEvalError("Error trying to eval macro.") from e
+
+        try:
             annotations = t.get_type_hints(func)
         except NameError:  # forward references aren't handled
             annotations = {}
 
+        # If the macro is annotated, we try coerce the actual parameters to the corresponding types
         if annotations:
-            spec = inspect.getfullargspec(func)
-            callargs = inspect.getcallargs(func, self, *args, **kwargs)
-            new_args: t.List[t.Any] = []
-
-            for arg, value in callargs.items():
+            for arg, value in bound.arguments.items():
                 typ = annotations.get(arg)
-
-                if value is self:
+                if not typ:
                     continue
-                if arg == spec.varargs:
-                    new_args.extend(self._coerce(v, typ) for v in value)
-                elif arg == spec.varkw:
-                    for k, v in value.items():
-                        kwargs[k] = self._coerce(v, typ)
-                elif arg in kwargs:
-                    kwargs[arg] = self._coerce(value, typ)
-                else:
-                    new_args.append(self._coerce(value, typ))
 
-            args = new_args  # type: ignore
+                # Changes to bound.arguments will reflect in bound.args and bound.kwargs
+                # https://docs.python.org/3/library/inspect.html#inspect.BoundArguments.arguments
+                param = sig.parameters[arg]
+                if param.kind is inspect.Parameter.VAR_POSITIONAL:
+                    bound.arguments[arg] = tuple(self._coerce(v, typ) for v in value)
+                elif param.kind is inspect.Parameter.VAR_KEYWORD:
+                    bound.arguments[arg] = {k: self._coerce(v, typ) for k, v in value.items()}
+                else:
+                    bound.arguments[arg] = self._coerce(value, typ)
 
         try:
-            return func(self, *args, **kwargs)
+            return func(*bound.args, **bound.kwargs)
         except Exception as e:
             print_exception(e, self.python_env)
             raise MacroEvalError("Error trying to eval macro.") from e
@@ -337,7 +341,8 @@ class MacroEvaluator:
                 else:
                     if kwargs:
                         raise MacroEvalError(
-                            f"Positional argument cannot follow keyword argument.\n  {func.sql(dialect=self.dialect)} at '{self._path}'"
+                            "Positional argument cannot follow keyword argument.\n  "
+                            f"{func.sql(dialect=self.dialect)} at '{self._path}'"
                         )
 
                     args.append(e)
@@ -479,7 +484,7 @@ class MacroEvaluator:
                 return expr
             if issubclass(base, exp.Expression):
                 d = Dialect.get_or_raise(self.dialect)
-                into = base if base in d.parser().EXPRESSION_PARSERS else None
+                into = base if base in d.parser_class.EXPRESSION_PARSERS else None
                 if into is None:
                     if isinstance(expr, exp.Literal):
                         coerced = parse_one(expr.this)
@@ -786,10 +791,11 @@ def star(
     evaluator: MacroEvaluator,
     relation: exp.Table,
     alias: exp.Column = t.cast(exp.Column, exp.column("")),
-    except_: t.Union[exp.Array, exp.Tuple] = exp.Tuple(this=[]),
+    exclude: t.Union[exp.Array, exp.Tuple] = exp.Tuple(this=[]),
     prefix: exp.Literal = exp.Literal.string(""),
     suffix: exp.Literal = exp.Literal.string(""),
     quote_identifiers: exp.Boolean = exp.true(),
+    except_: t.Union[exp.Array, exp.Tuple] = exp.Tuple(this=[]),
 ) -> t.List[exp.Alias]:
     """Returns a list of projections for the given relation.
 
@@ -797,10 +803,11 @@ def star(
         evaluator: MacroEvaluator that invoked the macro
         relation: The relation to select star from
         alias: The alias of the relation
-        except_: Columns to exclude
+        exclude: Columns to exclude
         prefix: A prefix to use for all selections
         suffix: A suffix to use for all selections
         quote_identifiers: Whether or not quote the resulting aliases, defaults to true
+        except_: Alias for exclude (TODO: deprecate this, update docs)
 
     Returns:
         An array of columns.
@@ -809,14 +816,20 @@ def star(
         >>> from sqlglot import parse_one, exp
         >>> from sqlglot.schema import MappingSchema
         >>> from sqlmesh.core.macros import MacroEvaluator
-        >>> sql = "SELECT @STAR(foo, bar, [c], 'baz_') FROM foo AS bar"
+        >>> sql = "SELECT @STAR(foo, bar, exclude := [c], prefix := 'baz_') FROM foo AS bar"
         >>> MacroEvaluator(schema=MappingSchema({"foo": {"a": exp.DataType.build("string"), "b": exp.DataType.build("string"), "c": exp.DataType.build("string"), "d": exp.DataType.build("int")}})).transform(parse_one(sql)).sql()
         'SELECT CAST("bar"."a" AS TEXT) AS "baz_a", CAST("bar"."b" AS TEXT) AS "baz_b", CAST("bar"."d" AS INT) AS "baz_d" FROM foo AS bar'
     """
     if alias and not isinstance(alias, (exp.Identifier, exp.Column)):
         raise SQLMeshError(f"Invalid alias '{alias}'. Expected an identifier.")
-    if except_ and not isinstance(except_, (exp.Array, exp.Tuple)):
-        raise SQLMeshError(f"Invalid except '{except_}'. Expected an array.")
+    if exclude and not isinstance(exclude, (exp.Array, exp.Tuple)):
+        raise SQLMeshError(f"Invalid exclude '{exclude}'. Expected an array.")
+    if except_:
+        logger.warning(
+            "The 'except_' argument in @STAR will soon be deprecated. Use 'exclude' instead."
+        )
+        if not isinstance(exclude, (exp.Array, exp.Tuple)):
+            raise SQLMeshError(f"Invalid exclude_ '{exclude}'. Expected an array.")
     if prefix and not isinstance(prefix, exp.Literal):
         raise SQLMeshError(f"Invalid prefix '{prefix}'. Expected a literal.")
     if suffix and not isinstance(suffix, exp.Literal):
@@ -824,12 +837,12 @@ def star(
     if not isinstance(quote_identifiers, exp.Boolean):
         raise SQLMeshError(f"Invalid quote_identifiers '{quote_identifiers}'. Expected a boolean.")
 
-    exclude = {e.name for e in except_.expressions}
+    excluded_names = {e.name for e in exclude.expressions or except_.expressions}
     quoted = quote_identifiers.this
     table_identifier = alias.name or relation.name
 
     columns_to_types = {
-        k: v for k, v in evaluator.columns_to_types(relation).items() if k not in exclude
+        k: v for k, v in evaluator.columns_to_types(relation).items() if k not in excluded_names
     }
     if columns_to_types_all_known(columns_to_types):
         return [

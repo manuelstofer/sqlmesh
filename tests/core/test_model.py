@@ -1,3 +1,4 @@
+# ruff: noqa: F811
 import json
 import logging
 import typing as t
@@ -453,7 +454,7 @@ def test_json_serde():
             cron '@daily',
             storage_format parquet,
             partitioned_by a,
-            table_properties (
+            physical_properties (
                 key_a = 'value_a',
                 'key_b' = 1,
                 key_c = true,
@@ -1553,6 +1554,35 @@ def test_python_model_depends_on() -> None:
     assert m.depends_on == {'"foo"."bar"'}
 
 
+def test_python_model_with_session_properties():
+    @model(
+        name="python_model_prop",
+        kind="full",
+        columns={"some_col": "int"},
+        session_properties={"some_string": "string_prop", "some_bool": True, "some_float": 1.0},
+    )
+    def python_model_prop(context, **kwargs):
+        context.table("foo")
+
+    m = model.get_registry()["python_model_prop"].model(
+        module_path=Path("."),
+        path=Path("."),
+        dialect="duckdb",
+        defaults={
+            "session_properties": {
+                "some_string": "default_string",
+                "default_value": "default_value",
+            }
+        },
+    )
+    assert m.session_properties == {
+        "some_string": "string_prop",
+        "some_bool": True,
+        "some_float": 1.0,
+        "default_value": "default_value",
+    }
+
+
 def test_python_models_returning_sql(assert_exp_eq) -> None:
     config = Config(model_defaults=ModelDefaultsConfig(dialect="snowflake"))
     context = Context(config=config)
@@ -2420,13 +2450,13 @@ def test_custom_interval_unit():
         )
 
 
-def test_model_table_properties() -> None:
+def test_model_physical_properties() -> None:
     # Validate python model table properties
     @model(
         "my_model",
         kind="full",
         columns={"id": "int"},
-        table_properties={
+        physical_properties={
             "format": "PARQUET",
             "bucket_count": 0,
             "orc_bloom_filter_fpp": 0.05,
@@ -2441,7 +2471,7 @@ def test_model_table_properties() -> None:
         path=Path("."),
     )
 
-    assert python_model.table_properties == {
+    assert python_model.physical_properties == {
         "format": exp.Literal.string("PARQUET"),
         "bucket_count": exp.Literal.number(0),
         "orc_bloom_filter_fpp": exp.Literal.number(0.05),
@@ -2449,6 +2479,186 @@ def test_model_table_properties() -> None:
     }
 
     # Validate a tuple.
+    sql_model = load_sql_based_model(
+        d.parse(
+            """
+        MODEL (
+            name test_schema.test_model,
+            physical_properties (
+                key_a = 'value_a',
+                'key_b' = 1,
+                key_c = true,
+                "key_d" = 2.0,
+            )
+        );
+        SELECT a FROM tbl;
+        """
+        )
+    )
+    assert sql_model.physical_properties == {
+        "key_a": exp.convert("value_a"),
+        "key_b": exp.convert(1),
+        "key_c": exp.convert(True),
+        "key_d": exp.convert(2.0),
+    }
+    assert sql_model.physical_properties_ == d.parse_one(
+        """(key_a = 'value_a', 'key_b' = 1, key_c = TRUE, "key_d" = 2.0)"""
+    )
+
+    # Validate a tuple with one item.
+    sql_model = load_sql_based_model(
+        d.parse(
+            """
+            MODEL (
+                name test_schema.test_model,
+                physical_properties (key_a = 'value_a')
+            );
+            SELECT a FROM tbl;
+            """
+        )
+    )
+    assert sql_model.physical_properties == {"key_a": exp.convert("value_a")}
+    assert (
+        sql_model.physical_properties_.sql()  # type: ignore
+        == exp.Tuple(expressions=[d.parse_one("key_a = 'value_a'")]).sql()
+    )
+
+    # Validate an array.
+    sql_model = load_sql_based_model(
+        d.parse(
+            """
+        MODEL (
+            name test_schema.test_model,
+            physical_properties [
+                key_a = 'value_a',
+                'key_b' = 1,
+            ]
+        );
+        SELECT a FROM tbl;
+        """
+        )
+    )
+    assert sql_model.physical_properties == {
+        "key_a": exp.convert("value_a"),
+        "key_b": exp.convert(1),
+    }
+    assert sql_model.physical_properties_ == d.parse_one("""(key_a = 'value_a', 'key_b' = 1)""")
+
+    # Validate empty.
+    sql_model = load_sql_based_model(
+        d.parse(
+            """
+        MODEL (
+            name test_schema.test_model
+        );
+        SELECT a FROM tbl;
+        """
+        )
+    )
+    assert sql_model.physical_properties == {}
+    assert sql_model.physical_properties_ is None
+
+    # Validate sql expression.
+    sql_model = load_sql_based_model(
+        d.parse(
+            """
+        MODEL (
+            name test_schema.test_model,
+            physical_properties [
+                key = ['value']
+            ]
+        );
+        SELECT a FROM tbl;
+        """
+        )
+    )
+    assert sql_model.physical_properties == {"key": d.parse_one("['value']")}
+    assert sql_model.physical_properties_ == exp.Tuple(expressions=[d.parse_one("key = ['value']")])
+
+    # Validate dict parsing.
+    sql_model = create_sql_model(
+        name="test_schema.test_model",
+        query=d.parse_one("SELECT a FROM tbl"),
+        physical_properties={
+            "key_a": exp.Literal.string("value_a"),
+            "key_b": exp.Literal.number(1),
+            "key_c": exp.true(),
+            "key_d": exp.Literal.number(2.0),
+        },
+    )
+    assert sql_model.physical_properties == {
+        "key_a": exp.convert("value_a"),
+        "key_b": exp.convert(1),
+        "key_c": exp.convert(True),
+        "key_d": exp.convert(2.0),
+    }
+    assert sql_model.physical_properties_ == d.parse_one(
+        """('key_a' = 'value_a', 'key_b' = 1, 'key_c' = TRUE, 'key_d' = 2.0)"""
+    )
+
+    with pytest.raises(ConfigError, match=r"Invalid property 'invalid'.*"):
+        load_sql_based_model(
+            d.parse(
+                """
+                MODEL (
+                    name test_schema.test_model,
+                    physical_properties [
+                        invalid
+                    ]
+                );
+                SELECT a FROM tbl;
+                """
+            )
+        )
+
+
+def test_model_physical_properties_labels() -> None:
+    sql_model = load_sql_based_model(
+        d.parse(
+            """
+        MODEL (
+            name test_schema.test_model,
+            physical_properties [
+                labels = [('test-label', 'label-value')]
+            ]
+        );
+        SELECT a FROM tbl;
+        """
+        )
+    )
+    assert sql_model.physical_properties == {"labels": exp.array("('test-label', 'label-value')")}
+
+
+def test_physical_and_virtual_table_properties() -> None:
+    sql_model = load_sql_based_model(
+        d.parse(
+            """
+        MODEL (
+            name test_schema.test_model,
+            physical_properties (
+                partition_expiration_days = 7,
+                labels = [('test-physical-label', 'label-physical-value')],
+            ),
+            virtual_properties (
+                labels = [('test-virtual-label', 'label-virtual-value')],
+            )
+        );
+        SELECT a FROM tbl;
+        """
+        )
+    )
+    assert sql_model.physical_properties == {
+        "partition_expiration_days": exp.convert(7),
+        "labels": exp.array("('test-physical-label', 'label-physical-value')"),
+    }
+
+    assert sql_model.virtual_properties == {
+        "labels": exp.array("('test-virtual-label', 'label-virtual-value')"),
+    }
+
+
+def test_model_table_properties() -> None:
+    # Ensure backward compatibility to table_properties.
     sql_model = load_sql_based_model(
         d.parse(
             """
@@ -2465,121 +2675,126 @@ def test_model_table_properties() -> None:
         """
         )
     )
-    assert sql_model.table_properties == {
+    assert sql_model.physical_properties == {
         "key_a": exp.convert("value_a"),
         "key_b": exp.convert(1),
         "key_c": exp.convert(True),
         "key_d": exp.convert(2.0),
     }
-    assert sql_model.table_properties_ == d.parse_one(
+    assert sql_model.physical_properties_ == d.parse_one(
         """(key_a = 'value_a', 'key_b' = 1, key_c = TRUE, "key_d" = 2.0)"""
     )
 
-    # Validate a tuple with one item.
-    sql_model = load_sql_based_model(
-        d.parse(
-            """
-            MODEL (
-                name test_schema.test_model,
-                table_properties (key_a = 'value_a')
-            );
-            SELECT a FROM tbl;
-            """
-        )
-    )
-    assert sql_model.table_properties == {"key_a": exp.convert("value_a")}
-    assert (
-        sql_model.table_properties_.sql()  # type: ignore
-        == exp.Tuple(expressions=[d.parse_one("key_a = 'value_a'")]).sql()
-    )
-
-    # Validate an array.
     sql_model = load_sql_based_model(
         d.parse(
             """
         MODEL (
             name test_schema.test_model,
-            table_properties [
-                key_a = 'value_a',
-                'key_b' = 1,
-            ]
+            table_properties (
+                partition_expiration_days = 7,
+            )
         );
         SELECT a FROM tbl;
         """
         )
     )
-    assert sql_model.table_properties == {
-        "key_a": exp.convert("value_a"),
-        "key_b": exp.convert(1),
+    assert sql_model.physical_properties == {
+        "partition_expiration_days": exp.convert(7),
     }
-    assert sql_model.table_properties_ == d.parse_one("""(key_a = 'value_a', 'key_b' = 1)""")
+    assert sql_model.physical_properties_ == d.parse_one("""(partition_expiration_days = 7,)""")
 
-    # Validate empty.
-    sql_model = load_sql_based_model(
-        d.parse(
-            """
-        MODEL (
-            name test_schema.test_model
-        );
-        SELECT a FROM tbl;
-        """
-        )
-    )
-    assert sql_model.table_properties == {}
-    assert sql_model.table_properties_ is None
 
-    # Validate sql expression.
-    sql_model = load_sql_based_model(
-        d.parse(
-            """
-        MODEL (
-            name test_schema.test_model,
-            table_properties [
-                key = ['value']
-            ]
-        );
-        SELECT a FROM tbl;
-        """
-        )
-    )
-    assert sql_model.table_properties == {"key": d.parse_one("['value']")}
-    assert sql_model.table_properties_ == exp.Tuple(expressions=[d.parse_one("key = ['value']")])
-
-    # Validate dict parsing.
-    sql_model = create_sql_model(
-        name="test_schema.test_model",
-        query=d.parse_one("SELECT a FROM tbl"),
-        table_properties={
-            "key_a": exp.Literal.string("value_a"),
-            "key_b": exp.Literal.number(1),
-            "key_c": exp.true(),
-            "key_d": exp.Literal.number(2.0),
-        },
-    )
-    assert sql_model.table_properties == {
-        "key_a": exp.convert("value_a"),
-        "key_b": exp.convert(1),
-        "key_c": exp.convert(True),
-        "key_d": exp.convert(2.0),
-    }
-    assert sql_model.table_properties_ == d.parse_one(
-        """('key_a' = 'value_a', 'key_b' = 1, 'key_c' = TRUE, 'key_d' = 2.0)"""
-    )
-
-    with pytest.raises(ConfigError, match=r"Invalid property 'invalid'.*"):
-        load_sql_based_model(
+def test_model_table_properties_conflicts() -> None:
+    # Throw an error on conflicting usage of table_properties and physical_properties.
+    with pytest.raises(ConfigError, match=r"Cannot use argument 'table_properties'*"):
+        sql_model = load_sql_based_model(
             d.parse(
                 """
                 MODEL (
                     name test_schema.test_model,
-                    table_properties [
-                        invalid
-                    ]
+                    table_properties (
+                        key_a = 'value_a',
+                        'key_b' = 1,
+                        key_c = true,
+                        "key_d" = 2.0,
+                    ),
+                    physical_properties (key_a = 'value_a')
                 );
                 SELECT a FROM tbl;
                 """
             )
         )
+        sql_model.physical_properties
+
+
+def test_session_properties_on_model_and_project(sushi_context):
+    model_defaults = ModelDefaultsConfig(
+        session_properties={
+            "some_bool": False,
+            "quoted_identifier": "value_you_wont_see",
+            "project_level_property": "project_property",
+        }
+    )
+
+    model = load_sql_based_model(
+        d.parse(
+            """
+        MODEL (
+            name test_schema.test_model,
+            session_properties (
+                'spark.executor.cores' = 2,
+                'spark.executor.memory' = '1G',
+                some_bool = True,
+                some_float = 0.1,
+                quoted_identifier = "quoted identifier",
+                unquoted_identifier = unquoted_identifier,
+            )
+        );
+        SELECT a FROM tbl;
+        """,
+            default_dialect="snowflake",
+        ),
+        defaults=model_defaults.dict(),
+    )
+
+    assert model.session_properties == {
+        "spark.executor.cores": 2,
+        "spark.executor.memory": "1G",
+        "some_bool": True,
+        "some_float": 0.1,
+        "quoted_identifier": exp.column("quoted identifier", quoted=True),
+        "unquoted_identifier": exp.column("unquoted_identifier", quoted=False),
+        "project_level_property": "project_property",
+    }
+
+
+def test_project_level_session_properties(sushi_context):
+    model_defaults = ModelDefaultsConfig(
+        session_properties={
+            "some_bool": False,
+            "some_float": 0.1,
+            "project_level_property": "project_property",
+        }
+    )
+
+    model = load_sql_based_model(
+        d.parse(
+            """
+        MODEL (
+            name test_schema.test_model,
+        );
+        SELECT a FROM tbl;
+        """,
+            default_dialect="snowflake",
+        ),
+        defaults=model_defaults.dict(),
+    )
+
+    assert model.session_properties == {
+        "some_bool": False,
+        "some_float": 0.1,
+        "project_level_property": "project_property",
+    }
 
 
 def test_model_session_properties(sushi_context):
@@ -2616,6 +2831,24 @@ def test_model_session_properties(sushi_context):
         "some_float": 0.1,
         "quoted_identifier": exp.column("quoted identifier", quoted=True),
         "unquoted_identifier": exp.column("unquoted_identifier", quoted=False),
+    }
+
+    model = load_sql_based_model(
+        d.parse(
+            """
+        MODEL (
+            name test_schema.test_model,
+            session_properties (
+                'warehouse' = 'test_warehouse'
+            )
+        );
+        SELECT a FROM tbl;
+        """,
+            default_dialect="snowflake",
+        )
+    )
+    assert model.session_properties == {
+        "warehouse": "test_warehouse",
     }
 
 
@@ -3432,7 +3665,7 @@ def test_default_catalog_external_model():
 
 def test_user_cannot_set_default_catalog():
     expressions = d.parse(
-        f"""
+        """
         MODEL (
             name db.table,
             default_catalog some_catalog
@@ -3469,7 +3702,7 @@ def test_depends_on_default_catalog_python():
 
 def test_end_date():
     expressions = d.parse(
-        f"""
+        """
         MODEL (
             name db.table,
             kind INCREMENTAL_BY_TIME_RANGE (
@@ -3491,7 +3724,7 @@ def test_end_date():
     with pytest.raises(ConfigError, match=".*Start date.+can't be greater than end date.*"):
         load_sql_based_model(
             d.parse(
-                f"""
+                """
             MODEL (
                 name db.table,
                 kind INCREMENTAL_BY_TIME_RANGE (
@@ -3509,7 +3742,7 @@ def test_end_date():
 
 def test_end_no_start():
     expressions = d.parse(
-        f"""
+        """
         MODEL (
             name db.table,
             kind INCREMENTAL_BY_TIME_RANGE (
@@ -3753,7 +3986,9 @@ def test_named_variables_python_model(mocker: MockerFixture) -> None:
     def model_with_named_variables(
         context, start: TimeLike, test_var_a: str, test_var_b: t.Optional[str] = None, **kwargs
     ):
-        return pd.DataFrame([{"a": test_var_a, "b": test_var_b, "start": start.strftime("%Y-%m-%d")}])  # type: ignore
+        return pd.DataFrame(
+            [{"a": test_var_a, "b": test_var_b, "start": start.strftime("%Y-%m-%d")}]  # type: ignore
+        )
 
     python_model = model.get_registry()["test_named_variables_python_model"].model(
         module_path=Path("."),
@@ -3952,6 +4187,13 @@ def test_this_model() -> None:
 
 
 def test_macros_in_model_statement(sushi_context, assert_exp_eq):
+    @macro()
+    def session_properties(evaluator, value):
+        return exp.Property(
+            this=exp.var("session_properties"),
+            value=exp.convert([exp.convert("foo").eq(exp.var(f"bar_{value}"))]),
+        )
+
     expressions = d.parse(
         """
         MODEL (
@@ -3960,7 +4202,8 @@ def test_macros_in_model_statement(sushi_context, assert_exp_eq):
                 time_column @{time_column}
 
             ),
-            start @IF(@gateway = 'test_gateway', '2023-01-01', '2024-01-02')
+            start @IF(@gateway = 'test_gateway', '2023-01-01', '2024-01-02'),
+            @session_properties(baz)
         );
 
         SELECT a, b UNION SELECT c, c
@@ -3974,6 +4217,7 @@ def test_macros_in_model_statement(sushi_context, assert_exp_eq):
     assert model.time_column
     assert model.time_column.column == exp.column("a", quoted=True)
     assert model.start == "2023-01-01"
+    assert model.session_properties == {"foo": exp.column("bar_baz", quoted=False)}
 
 
 def test_python_model_dialect():
@@ -4014,3 +4258,22 @@ def test_python_model_dialect():
     assert m.time_column.format == "%Y-%m-%d"
 
     model._dialect = None
+
+
+def test_jinja_runtime_stage(assert_exp_eq):
+    expressions = d.parse(
+        """
+        MODEL (
+            name test.jinja
+        );
+
+        JINJA_QUERY_BEGIN;
+
+        SELECT '{{ runtime_stage }}' as a, {{ runtime_stage == 'loading' }} as b
+
+        JINJA_END;
+        """
+    )
+
+    model = load_sql_based_model(expressions)
+    assert_exp_eq(model.render_query(), '''SELECT 'loading' as "a", TRUE as "b"''')

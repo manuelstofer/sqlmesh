@@ -6,7 +6,6 @@ import uuid
 from urllib.parse import urlencode, urljoin
 
 import requests
-from requests.models import Response
 
 from sqlmesh.core.console import Console
 from sqlmesh.core.environment import Environment
@@ -17,11 +16,12 @@ from sqlmesh.core.state_sync import Versions
 from sqlmesh.core.user import User
 from sqlmesh.schedulers.airflow import common
 from sqlmesh.utils import unique
+from sqlmesh.utils.date import TimeLike
 from sqlmesh.utils.errors import (
-    ApiClientError,
     ApiServerError,
     NotFoundError,
     SQLMeshError,
+    raise_for_status,
 )
 from sqlmesh.utils.pydantic import PydanticModel
 
@@ -201,6 +201,7 @@ class AirflowClient(BaseAirflowClient):
         directly_modified_snapshots: t.Optional[t.List[SnapshotId]] = None,
         indirectly_modified_snapshots: t.Optional[t.Dict[str, t.List[SnapshotId]]] = None,
         removed_snapshots: t.Optional[t.List[SnapshotId]] = None,
+        execution_time: t.Optional[TimeLike] = None,
     ) -> None:
         request = common.PlanApplicationRequest(
             new_snapshots=list(new_snapshots),
@@ -221,6 +222,7 @@ class AirflowClient(BaseAirflowClient):
             directly_modified_snapshots=directly_modified_snapshots or [],
             indirectly_modified_snapshots=indirectly_modified_snapshots or {},
             removed_snapshots=removed_snapshots or [],
+            execution_time=execution_time,
         )
 
         response = self._session.post(
@@ -365,12 +367,3 @@ def _list_to_json(models: t.Collection[T], batch_size: t.Optional[int] = None) -
 
 def _json_query_param(value: t.Any) -> str:
     return json.dumps(value, separators=(",", ":"))
-
-
-def raise_for_status(response: Response) -> None:
-    if response.status_code == 404:
-        raise NotFoundError(response.text)
-    if 400 <= response.status_code < 500:
-        raise ApiClientError(response.text)
-    if 500 <= response.status_code < 600:
-        raise ApiServerError(response.text)

@@ -20,13 +20,15 @@ if t.TYPE_CHECKING:
 router = APIRouter()
 
 
-def get_source_name(node: Node, default_catalog: t.Optional[str], dialect: str) -> str:
+def get_source_name(
+    node: Node, default_catalog: t.Optional[str], dialect: str, model_name: str
+) -> str:
     table = node.expression.find(exp.Table)
     if table:
         return normalize_model_name(table, default_catalog=default_catalog, dialect=dialect)
     if node.reference_node_name:
-        # CTE name
-        return node.reference_node_name
+        # CTE name or derived table alias
+        return f"{model_name}: {node.reference_node_name}"
     return ""
 
 
@@ -41,6 +43,8 @@ def create_lineage_adjacency_list(
 ) -> t.Dict[str, t.Dict[str, LineageColumn]]:
     """Create an adjacency list representation of a column's lineage graph including CTEs"""
     graph: t.Dict[str, t.Dict[str, LineageColumn]] = defaultdict(dict)
+    visited = set()
+    visited.add((model_name, column_name))
     nodes = [(model_name, column_name)]
     while nodes:
         model_name, column = nodes.pop(0)
@@ -60,7 +64,10 @@ def create_lineage_adjacency_list(
                 continue
             node_name = (
                 get_source_name(
-                    node, default_catalog=context.default_catalog, dialect=model.dialect
+                    node,
+                    default_catalog=context.default_catalog,
+                    dialect=model.dialect,
+                    model_name=model_name,
                 )
                 or model_name
             )
@@ -71,13 +78,17 @@ def create_lineage_adjacency_list(
                 dependencies = defaultdict(set)
             for d in node.downstream:
                 table = get_source_name(
-                    d, default_catalog=context.default_catalog, dialect=model.dialect
+                    d,
+                    default_catalog=context.default_catalog,
+                    dialect=model.dialect,
+                    model_name=model_name,
                 )
                 if table:
                     column_name = get_column_name(d)
                     dependencies[table].add(column_name)
-                    if not d.downstream:
+                    if isinstance(d.expression, exp.Table) and (table, column_name) not in visited:
                         nodes.append((table, column_name))
+                        visited.add((table, column_name))
 
             graph[node_name][node_column] = LineageColumn(
                 expression=node.expression.sql(pretty=True, dialect=model.dialect),

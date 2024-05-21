@@ -26,12 +26,12 @@ def test_create_view(make_mocked_engine_adapter: t.Callable):
     adapter = make_mocked_engine_adapter(EngineAdapter)
     adapter.create_view("test_view", parse_one("SELECT a FROM tbl"))
     adapter.create_view("test_view", parse_one("SELECT a FROM tbl"), replace=False)
-    # Test that `table_properties` are ignored for base engine adapter
+    # Test that `physical_properties` are ignored for base engine adapter
     adapter.create_view(
         "test_view",
         parse_one("SELECT a FROM tbl"),
         replace=True,
-        table_properties={"a": exp.convert(1)},
+        view_properties={"a": exp.convert(1)},
     )
 
     assert to_sql_calls(adapter) == [
@@ -48,7 +48,7 @@ def test_create_view_pandas(make_mocked_engine_adapter: t.Callable):
         "test_view",
         pd.DataFrame({"a": [1, 2, 3]}),
         replace=True,
-        table_properties={"a": exp.convert(1)},
+        view_properties={"a": exp.convert(1)},
     )
 
     assert to_sql_calls(adapter) == [
@@ -2661,3 +2661,19 @@ def test_get_data_objects_batching(mocker: MockerFixture, make_mocked_engine_ada
 
     assert len(calls[0][0][1]) == adapter.DATA_OBJECT_FILTER_BATCH_SIZE
     assert len(calls[1][0][1]) == 1
+
+
+def test_pre_ping(mocker: MockerFixture, make_mocked_engine_adapter: t.Callable):
+    adapter = make_mocked_engine_adapter(EngineAdapter)
+    adapter._pre_ping = True
+    adapter.cursor.execute.side_effect = RuntimeError("error")
+
+    with pytest.raises(RuntimeError):
+        adapter.execute("SELECT 'test'")
+
+    assert to_sql_calls(adapter) == [
+        "SELECT 1",  # ping
+        "SELECT 'test'",
+    ]
+
+    adapter._connection_pool.get().close.assert_called_once()

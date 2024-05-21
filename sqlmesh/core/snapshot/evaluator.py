@@ -98,6 +98,7 @@ class SnapshotEvaluator:
         execution_time: TimeLike,
         snapshots: t.Dict[str, Snapshot],
         deployability_index: t.Optional[DeployabilityIndex] = None,
+        batch_index: int = 0,
         **kwargs: t.Any,
     ) -> t.Optional[str]:
         """Renders the snapshot's model, executes it and stores the result in the snapshot's physical table.
@@ -109,6 +110,7 @@ class SnapshotEvaluator:
             execution_time: The date/time time reference to use for execution time.
             snapshots: All upstream snapshots (by name) to use for expansion and mapping of physical locations.
             deployability_index: Determines snapshots that are deployable in the context of this evaluation.
+            batch_index: If the snapshot is part of a batch of related snapshots; which index in the batch is it
             kwargs: Additional kwargs to pass to the renderer.
 
         Returns:
@@ -121,6 +123,7 @@ class SnapshotEvaluator:
             execution_time,
             snapshots,
             deployability_index=deployability_index,
+            batch_index=batch_index,
             **kwargs,
         )
         if result is None or isinstance(result, str):
@@ -443,6 +446,7 @@ class SnapshotEvaluator:
         snapshots: t.Dict[str, Snapshot],
         limit: t.Optional[int] = None,
         deployability_index: t.Optional[DeployabilityIndex] = None,
+        batch_index: int = 0,
         **kwargs: t.Any,
     ) -> DF | str | None:
         """Renders the snapshot's model and executes it. The return value depends on whether the limit was specified.
@@ -455,6 +459,7 @@ class SnapshotEvaluator:
             snapshots: All upstream snapshots to use for expansion and mapping of physical locations.
             limit: If limit is not None, the query will not be persisted but evaluated and returned as a dataframe.
             deployability_index: Determines snapshots that are deployable in the context of this evaluation.
+            batch_index: If the snapshot is part of a batch of related snapshots; which index in the batch is it
             kwargs: Additional kwargs to pass to the renderer.
         """
         if not snapshot.is_model:
@@ -481,6 +486,7 @@ class SnapshotEvaluator:
                     query_or_df,
                     snapshots,
                     deployability_index,
+                    batch_index=batch_index,
                     start=start,
                     end=end,
                     execution_time=execution_time,
@@ -493,6 +499,7 @@ class SnapshotEvaluator:
                     query_or_df,
                     snapshots,
                     deployability_index,
+                    batch_index=batch_index,
                     start=start,
                     end=end,
                     execution_time=execution_time,
@@ -543,14 +550,23 @@ class SnapshotEvaluator:
 
             if limit is not None:
                 query_or_df = next(queries_or_dfs)
-                if isinstance(query_or_df, exp.Select):
-                    existing_limit = query_or_df.args.get("limit")
-                    if existing_limit:
-                        limit = min(
-                            limit,
-                            execute(exp.select(existing_limit.expression)).rows[0][0],
-                        )
-                return query_or_df.head(limit) if hasattr(query_or_df, "head") else self.adapter._fetch_native_df(query_or_df.limit(limit))  # type: ignore
+                if isinstance(query_or_df, pd.DataFrame):
+                    return query_or_df.head(limit)
+                if not isinstance(query_or_df, exp.Expression):
+                    # We assume that if this branch is reached, `query_or_df` is a pyspark dataframe,
+                    # so we use `limit` instead of `head` to get back a dataframe instead of List[Row]
+                    # https://spark.apache.org/docs/3.1.1/api/python/reference/api/pyspark.sql.DataFrame.head.html#pyspark.sql.DataFrame.head
+                    return query_or_df.limit(limit)
+
+                assert isinstance(query_or_df, exp.Query)
+
+                existing_limit = query_or_df.args.get("limit")
+                if existing_limit:
+                    limit = min(limit, execute(exp.select(existing_limit.expression)).rows[0][0])
+                    assert limit is not None
+
+                return self.adapter._fetch_native_df(query_or_df.limit(limit))
+
             # DataFrames, unlike SQL expressions, can provide partial results by yielding dataframes. As a result,
             # if the engine supports INSERT OVERWRITE or REPLACE WHERE and the snapshot is incremental by time range, we risk
             # having a partial result since each dataframe write can re-truncate partitions. To avoid this, we
@@ -847,6 +863,7 @@ class EvaluationStrategy(abc.ABC):
         query_or_df: QueryOrDF,
         snapshots: t.Dict[str, Snapshot],
         deployability_index: DeployabilityIndex,
+        batch_index: int,
         **kwargs: t.Any,
     ) -> None:
         """Inserts the given query or a DataFrame into the target table or replaces a view.
@@ -857,6 +874,7 @@ class EvaluationStrategy(abc.ABC):
             query_or_df: The query or DataFrame to insert.
             snapshots: Parent snapshots.
             deployability_index: Determines snapshots that are deployable in the context of this evaluation.
+            batch_index: Snapshot position in the current batch
         """
 
     @abc.abstractmethod
@@ -867,6 +885,7 @@ class EvaluationStrategy(abc.ABC):
         query_or_df: QueryOrDF,
         snapshots: t.Dict[str, Snapshot],
         deployability_index: DeployabilityIndex,
+        batch_index: int,
         **kwargs: t.Any,
     ) -> None:
         """Appends the given query or a DataFrame to the existing table.
@@ -877,6 +896,7 @@ class EvaluationStrategy(abc.ABC):
             query_or_df: The query or DataFrame to insert.
             snapshots: Parent snapshots.
             deployability_index: Determines snapshots that are deployable in the context of this evaluation.
+            batch_index: Snapshot position in the current batch
         """
 
     @abc.abstractmethod
@@ -969,7 +989,7 @@ class EvaluationStrategy(abc.ABC):
             partitioned_by=model.partitioned_by,
             partition_interval_unit=model.interval_unit,
             clustered_by=model.clustered_by,
-            table_properties=model.table_properties,
+            table_properties=model.physical_properties,
             table_description=model.description,
             column_descriptions=model.column_descriptions,
         )
@@ -983,6 +1003,7 @@ class SymbolicStrategy(EvaluationStrategy):
         query_or_df: QueryOrDF,
         snapshots: t.Dict[str, Snapshot],
         deployability_index: DeployabilityIndex,
+        batch_index: int,
         **kwargs: t.Any,
     ) -> None:
         pass
@@ -994,6 +1015,7 @@ class SymbolicStrategy(EvaluationStrategy):
         query_or_df: QueryOrDF,
         snapshots: t.Dict[str, Snapshot],
         deployability_index: DeployabilityIndex,
+        batch_index: int,
         **kwargs: t.Any,
     ) -> None:
         pass
@@ -1066,6 +1088,7 @@ class PromotableStrategy(EvaluationStrategy):
             exp.select("*").from_(table_name, dialect=self.adapter.dialect),
             table_description=snapshot.model.description if is_prod else None,
             column_descriptions=snapshot.model.column_descriptions if is_prod else None,
+            view_properties=snapshot.model.virtual_properties,
         )
 
     def demote(
@@ -1086,6 +1109,7 @@ class MaterializableStrategy(PromotableStrategy):
         query_or_df: QueryOrDF,
         snapshots: t.Dict[str, Snapshot],
         deployability_index: DeployabilityIndex,
+        batch_index: int,
         **kwargs: t.Any,
     ) -> None:
         model = snapshot.model
@@ -1111,7 +1135,7 @@ class MaterializableStrategy(PromotableStrategy):
                 partitioned_by=model.partitioned_by,
                 partition_interval_unit=model.interval_unit,
                 clustered_by=model.clustered_by,
-                table_properties=model.table_properties,
+                table_properties=model.physical_properties,
                 table_description=model.description if is_table_deployable else None,
                 column_descriptions=model.column_descriptions if is_table_deployable else None,
             )
@@ -1133,7 +1157,7 @@ class MaterializableStrategy(PromotableStrategy):
                 partitioned_by=model.partitioned_by,
                 partition_interval_unit=model.interval_unit,
                 clustered_by=model.clustered_by,
-                table_properties=model.table_properties,
+                table_properties=model.physical_properties,
                 table_description=model.description if is_table_deployable else None,
                 column_descriptions=model.column_descriptions if is_table_deployable else None,
             )
@@ -1161,6 +1185,7 @@ class IncrementalByTimeRangeStrategy(MaterializableStrategy):
         query_or_df: QueryOrDF,
         snapshots: t.Dict[str, Snapshot],
         deployability_index: DeployabilityIndex,
+        batch_index: int,
         **kwargs: t.Any,
     ) -> None:
         model = snapshot.model
@@ -1183,10 +1208,14 @@ class IncrementalByUniqueKeyStrategy(MaterializableStrategy):
         query_or_df: QueryOrDF,
         snapshots: t.Dict[str, Snapshot],
         deployability_index: DeployabilityIndex,
+        batch_index: int,
         **kwargs: t.Any,
     ) -> None:
         model = snapshot.model
-        if not _intervals(snapshot, deployability_index):
+        # https://github.com/TobikoData/sqlmesh/issues/2609
+        # If there are no existing intervals yet; only clear the table for the first snapshot in the batch
+        # Otherwise, each subsequent snapshot in the batch will keep clearing the table when it runs instead of appending to it
+        if not _intervals(snapshot, deployability_index) and batch_index == 0:
             self._replace_query_for_model(model, name, query_or_df)
         else:
             self.adapter.merge(
@@ -1204,6 +1233,7 @@ class IncrementalByUniqueKeyStrategy(MaterializableStrategy):
         query_or_df: QueryOrDF,
         snapshots: t.Dict[str, Snapshot],
         deployability_index: t.Optional[DeployabilityIndex],
+        batch_index: int,
         **kwargs: t.Any,
     ) -> None:
         model = snapshot.model
@@ -1224,6 +1254,7 @@ class IncrementalUnmanagedStrategy(MaterializableStrategy):
         query_or_df: QueryOrDF,
         snapshots: t.Dict[str, Snapshot],
         deployability_index: DeployabilityIndex,
+        batch_index: int,
         **kwargs: t.Any,
     ) -> None:
         model = snapshot.model
@@ -1243,6 +1274,7 @@ class IncrementalUnmanagedStrategy(MaterializableStrategy):
                 query_or_df,
                 snapshots,
                 deployability_index,
+                batch_index,
                 **kwargs,
             )
 
@@ -1255,6 +1287,7 @@ class FullRefreshStrategy(MaterializableStrategy):
         query_or_df: QueryOrDF,
         snapshots: t.Dict[str, Snapshot],
         deployability_index: DeployabilityIndex,
+        batch_index: int,
         **kwargs: t.Any,
     ) -> None:
         model = snapshot.model
@@ -1284,7 +1317,7 @@ class SCDType2Strategy(MaterializableStrategy):
                 partitioned_by=model.partitioned_by,
                 partition_interval_unit=model.interval_unit,
                 clustered_by=model.clustered_by,
-                table_properties=model.table_properties,
+                table_properties=model.physical_properties,
                 table_description=model.description if is_table_deployable else None,
                 column_descriptions=model.column_descriptions if is_table_deployable else None,
             )
@@ -1307,6 +1340,7 @@ class SCDType2Strategy(MaterializableStrategy):
         query_or_df: QueryOrDF,
         snapshots: t.Dict[str, Snapshot],
         deployability_index: DeployabilityIndex,
+        batch_index: int,
         **kwargs: t.Any,
     ) -> None:
         model = snapshot.model
@@ -1355,6 +1389,7 @@ class SCDType2Strategy(MaterializableStrategy):
         query_or_df: QueryOrDF,
         snapshots: t.Dict[str, Snapshot],
         deployability_index: DeployabilityIndex,
+        batch_index: int,
         **kwargs: t.Any,
     ) -> None:
         model = snapshot.model
@@ -1402,6 +1437,7 @@ class ViewStrategy(PromotableStrategy):
         query_or_df: QueryOrDF,
         snapshots: t.Dict[str, Snapshot],
         deployability_index: DeployabilityIndex,
+        batch_index: int,
         **kwargs: t.Any,
     ) -> None:
         model = snapshot.model
@@ -1433,7 +1469,7 @@ class ViewStrategy(PromotableStrategy):
             query_or_df,
             model.columns_to_types,
             materialized=self._is_materialized_view(model),
-            table_properties=model.table_properties,
+            view_properties=model.physical_properties,
             table_description=model.description,
             column_descriptions=model.column_descriptions,
         )
@@ -1445,6 +1481,7 @@ class ViewStrategy(PromotableStrategy):
         query_or_df: QueryOrDF,
         snapshots: t.Dict[str, Snapshot],
         deployability_index: DeployabilityIndex,
+        batch_index: int,
         **kwargs: t.Any,
     ) -> None:
         raise ConfigError(f"Cannot append to a view '{table_name}'.")
@@ -1464,7 +1501,7 @@ class ViewStrategy(PromotableStrategy):
             name,
             model.render_query_or_raise(**render_kwargs),
             materialized=self._is_materialized_view(model),
-            table_properties=model.table_properties,
+            view_properties=model.physical_properties,
             table_description=model.description if is_table_deployable else None,
             column_descriptions=model.column_descriptions if is_table_deployable else None,
         )
@@ -1485,7 +1522,7 @@ class ViewStrategy(PromotableStrategy):
             ),
             model.columns_to_types,
             materialized=self._is_materialized_view(model),
-            table_properties=model.table_properties,
+            view_properties=model.physical_properties,
             table_description=model.description,
             column_descriptions=model.column_descriptions,
         )
