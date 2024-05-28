@@ -25,6 +25,7 @@ from sqlmesh.utils import random_id
 if t.TYPE_CHECKING:
     from sqlmesh.core._typing import SchemaName, TableName
     from sqlmesh.core.engine_adapter.base import QueryOrDF
+    from sqlmesh.core.node import IntervalUnit
 
 
 @set_catalog()
@@ -164,6 +165,35 @@ class RedshiftEngineAdapter(
             )
 
         return statement
+
+    def _build_table_properties_exp(
+        self,
+        catalog_name: t.Optional[str] = None,
+        storage_format: t.Optional[str] = None,
+        partitioned_by: t.Optional[t.List[exp.Expression]] = None,
+        partition_interval_unit: t.Optional[IntervalUnit] = None,
+        clustered_by: t.Optional[t.List[str]] = None,
+        table_properties: t.Optional[t.Dict[str, exp.Expression]] = None,
+        columns_to_types: t.Optional[t.Dict[str, exp.DataType]] = None,
+        table_description: t.Optional[str] = None,
+    ) -> t.Optional[exp.Properties]:
+
+        create_table_properties = table_properties.get("create_table_properties")
+        if create_table_properties:
+            props = str(create_table_properties.this)
+            return exp.maybe_parse(props, into=exp.Properties, dialect=self.DIALECT)
+
+        return super()._build_table_properties_exp(
+            catalog_name,
+            storage_format,
+            partitioned_by,
+            partition_interval_unit,
+            clustered_by,
+            table_properties,
+            columns_to_types,
+            table_description,
+        )
+
 
     def create_view(
         self,
