@@ -1736,10 +1736,14 @@ class DebuggerTerminalConsole(TerminalConsole):
     def start_snapshot_evaluation_progress(self, snapshot: Snapshot) -> None:
         self._write(f"Evaluating {snapshot.name}")
 
+    def fmt_duration(self, duration_ms: t.Optional[int]) -> str:
+        return
+
     def update_snapshot_evaluation_progress(
         self, snapshot: Snapshot, batch_idx: int, duration_ms: t.Optional[int]
     ) -> None:
-        self._write(f"Evaluating {snapshot.name} | batch={batch_idx} | duration={duration_ms}ms")
+        fmt_duration = str(datetime.timedelta(milliseconds=duration_ms)).split('.')[0] if duration_ms else ""
+        self._write(f"Evaluating {snapshot.name} | batch={batch_idx} | duration={fmt_duration}")
 
     def stop_evaluation_progress(self, success: bool = True) -> None:
         self._write(f"Stopping evaluation with success={success}")
